@@ -113,7 +113,7 @@ export class AccountWatcher {
   // JID only as remoteJidAlt. Learn that LID so it counts as the owner chat everywhere.
   learnOwnerLid(key) {
     const lid = key.remoteJid || '';
-    if (lid.endsWith('@lid') && key.remoteJidAlt && sameUser(key.remoteJidAlt, this.ownerChat)
+    if (key.fromMe === true && lid.endsWith('@lid') && key.remoteJidAlt && sameUser(key.remoteJidAlt, this.ownerChat)
       && !this.ownerJids.includes(lid)) {
       this.ownerJids.push(lid);
       this.store.saveOwnerJids(this.ownerJids);
