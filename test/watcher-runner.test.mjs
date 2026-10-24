@@ -335,3 +335,13 @@ test('the request reaches claude on stdin, not on the command line', async () =>
   await runClaude(config(dir), JOB, jobDir, { spawnImpl: fakeSpawn({ stdout: JSON.stringify({ result: 'ok' }) }) });
   assert.match(fakeSpawn.last.input, /תסכם/);
 });
+
+test('the owner LID is learned from self-chat messages and passed to runs', async () => {
+  const { w, jobs } = await makeWatcher([
+    msg({ id: 'L1', chat: OWNER_LID, alt: OWNER, text: 'note to self', ts: TS - 3 }),
+    msg({ id: 'L2', chat: GROUP, text: '@claude hi', ts: TS - 1 }),
+  ]);
+  await w.poll();
+  await w.drain();
+  assert.deepEqual(jobs[0].job.ownerJids, [OWNER, OWNER_LID]);
+});

@@ -186,3 +186,13 @@ test('a failed receipt does not turn a delivered send into an error', async () =
   assert.deepEqual(readActions(jobDir).map(a => a.type), ['send', 'receipt-failed']);
   assert.equal(store.getThread('SENT1').jobId, 'T1');
 });
+
+test('naming the owner never unlocks reading the owner chat, by number or by LID', async () => {
+  const { tools, job } = setup({ request: 'תסכם מה דני 0500000001 כתב' });
+  job.ownerJids.push('222@lid');
+  await assert.rejects(tools.read_chat({ chat: OWNER }), /only be read from inside it/);
+  await assert.rejects(tools.read_chat({ chat: '0500000001' }), /only be read from inside it/);
+  await assert.rejects(tools.read_chat({ chat: '222@lid' }), /only be read from inside it/);
+  // Writing there is still fine.
+  assert.match(await tools.send_message({ chat: OWNER, text: 'x' }), /sent to/);
+});
