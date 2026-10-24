@@ -26,7 +26,7 @@ export function createTools(deps) {
   const policyCtx = {
     currentChat: [job.chat.jid, job.chat.alt].filter(Boolean),
     ownerChat: job.ownerJids,
-    triggerText: job.trigger.request,
+    triggerText: [job.trigger.earlier, job.trigger.request].filter(Boolean).join('\n'),
   };
 
   // Resolves a chat argument to { jid, alt, name, sendTo } and checks policy.

@@ -73,6 +73,13 @@ export class AccountWatcher {
       }
     }
     const trig = parseTrigger(text, this.regex);
+    // A swipe-reply to something a run sent continues that run's conversation,
+    // with or without "@claude" in front.
+    const thread = qid ? this.store.getThread(qid) : null;
+    if (thread && text.trim()) {
+      this.enqueue(rec, { name: thread.triggerName || this.cfg.triggers[0], request: trig ? trig.request : text.trim() }, thread);
+      return;
+    }
     if (!trig) return;
     this.enqueue(rec, trig);
   }
@@ -101,21 +108,23 @@ export class AccountWatcher {
     try {
       const key = await this.client.sendText(this.account.instance, this.ownerChat, defuseTrigger(text));
       this.store.recordSent(key.id);
+      return key.id || '';
     } catch (err) {
       this.log('error', { account: this.account.name, event: 'notify-failed', error: err.message });
+      return '';
     }
   }
 
-  enqueue(rec, trig) {
+  enqueue(rec, trig, thread = null) {
     this.pendingJobs += 1;
     this.queue = this.queue
-      .then(() => this.runOne(rec, trig))
+      .then(() => this.runOne(rec, trig, thread))
       .catch(err => this.log('error', { account: this.account.name, event: 'job-crashed', error: err.message }))
       .finally(() => { this.pendingJobs -= 1; });
     return this.queue;
   }
 
-  async buildJob(rec, trig) {
+  async buildJob(rec, trig, thread = null) {
     const key = rec.key;
     const alt = key.remoteJidAlt || '';
     const isGroup = isGroupJid(key.remoteJid);
@@ -138,8 +147,11 @@ export class AccountWatcher {
       trigger: {
         key: { id: key.id, remoteJid: key.remoteJid, fromMe: true, ...(key.participant ? { participant: key.participant } : {}) },
         request: trig.request,
-        quoted: quotedText(rec),
+        quoted: thread ? '' : quotedText(rec),
+        // Earlier requests in this conversation still name the chats it may use.
+        earlier: thread?.requests || '',
       },
+      resumeSessionId: thread?.sessionId || '',
       replyPrefix: this.cfg.replyPrefix,
       language: this.cfg.language,
       timezone: this.cfg.timezone,
@@ -148,21 +160,34 @@ export class AccountWatcher {
     };
   }
 
-  async runOne(rec, trig) {
-    const job = await this.buildJob(rec, trig);
+  async runOne(rec, trig, thread = null) {
+    const job = await this.buildJob(rec, trig, thread);
     const jobDir = this.store.jobDir(job.id);
     writeJsonAtomic(path.join(jobDir, 'job.json'), job);
-    const base = { account: this.account.name, job: job.id, chat: job.chat.isGroup ? 'group' : job.chat.isOwnerChat ? 'self' : 'dm' };
+    const base = {
+      account: this.account.name, job: job.id,
+      chat: job.chat.isGroup ? 'group' : job.chat.isOwnerChat ? 'self' : 'dm',
+      ...(thread ? { continues: thread.jobId } : {}),
+    };
     this.log('info', { ...base, event: 'run-start', requestChars: job.trigger.request.length });
 
     const res = await this.runJob(this.cfg, job, jobDir);
     const actions = readActions(jobDir);
     const delivered = actions.some(a => a.type === 'send' || a.type === 'approval');
+    const replyIds = actions.filter(a => a.type === 'send' && a.id).map(a => a.id);
     if (!res.ok) {
       await this.notifyOwner(t(this.cfg.language, 'failed', { name: job.triggerName, error: res.error || 'unknown error' }));
     } else if (!delivered && res.result) {
-      await this.notifyOwner(res.result);
+      replyIds.push(await this.notifyOwner(res.result));
       appendAction(jobDir, { type: 'fallback-to-owner' });
+    }
+    if (res.ok && res.sessionId) {
+      for (const id of replyIds.filter(Boolean)) {
+        this.store.linkThread(id, {
+          jobId: job.id, sessionId: res.sessionId, triggerName: job.triggerName,
+          requests: [job.trigger.earlier, job.trigger.request].filter(Boolean).join('\n').slice(-4000),
+        });
+      }
     }
     this.log(res.ok ? 'info' : 'error', {
       ...base, event: 'run-end', ok: res.ok, error: res.ok ? undefined : res.error,

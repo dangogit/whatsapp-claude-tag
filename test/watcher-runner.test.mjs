@@ -197,9 +197,43 @@ test('runClaude parses the JSON result and isolates the Claude config dir', asyn
   const res = await runClaude(cfg, JOB, jobDir, {
     spawnImpl: fakeSpawn({ stdout: JSON.stringify({ is_error: false, result: 'סיכמתי', total_cost_usd: 0.01, duration_ms: 900 }) }),
   });
-  assert.deepEqual(res, { ok: true, result: 'סיכמתי', error: '', costUsd: 0.01, durationMs: 900 });
+  assert.deepEqual(res, { ok: true, result: 'סיכמתי', error: '', costUsd: 0.01, durationMs: 900, sessionId: '' });
   assert.equal(fakeSpawn.last.opts.env.CLAUDE_CONFIG_DIR, cfg.claude.configDir);
-  assert.equal(fakeSpawn.last.opts.cwd, jobDir);
+  assert.equal(fakeSpawn.last.opts.cwd, path.join(dir, 'workdir'));
+});
+
+test('claude args resume a session only for a continuation', () => {
+  const dir = tmpDir();
+  assert.equal(claudeArgs(config(dir), JOB, '/j').includes('--resume'), false);
+  const args = claudeArgs(config(dir), { ...JOB, resumeSessionId: 'sess-1' }, '/j');
+  assert.equal(args[args.indexOf('--resume') + 1], 'sess-1');
+  assert.match(userPrompt({ ...JOB, resumeSessionId: 'sess-1' }), /replied to your last message/);
+});
+
+test('a swipe-reply to a run\'s message continues that session and keeps earlier names', async () => {
+  const { w, client } = await makeWatcher(
+    [msg({ id: 'T1', chat: OWNER, text: '@claude תשלח ליוסי סיכום', ts: TS - 5 })],
+    async (job, jobDir, c) => {
+      if (!job.resumeSessionId) {
+        const key = await c.sendText('inst', OWNER, 'איזה יוסי?');
+        appendAction(jobDir, { type: 'send', id: key.id });
+        return { ok: true, result: 'asked', sessionId: 'sess-1' };
+      }
+      return { ok: true, result: 'done', sessionId: 'sess-1' };
+    },
+  );
+  await w.poll();
+  await w.queue;
+  client.messages.push(msg({ id: 'T2', chat: OWNER, text: 'יוסי כהן', ts: TS - 1, quotedStanza: 'SENT1' }));
+  const seen = [];
+  const run = w.runJob;
+  w.runJob = async (c, job, jobDir) => { seen.push(job); return run(c, job, jobDir); };
+  await w.poll();
+  await w.queue;
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].resumeSessionId, 'sess-1');
+  assert.equal(seen[0].trigger.request, 'יוסי כהן');
+  assert.equal(seen[0].trigger.earlier, 'תשלח ליוסי סיכום');
 });
 
 test('runClaude reports errors and timeouts instead of throwing', async () => {

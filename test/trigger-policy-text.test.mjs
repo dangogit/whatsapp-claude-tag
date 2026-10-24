@@ -68,6 +68,8 @@ test('policy matches whole words only, and never on common request words', () =>
   const c = { ...ctx, triggerText: '@claude תסכם לי את ההודעות של היום ותשלח לי' };
   // A contact that named itself after a word the owner types cannot be unlocked by it.
   assert.equal(chatAllowed({ jid: '972533333333@s.whatsapp.net', name: 'היום' }, c).allowed, false);
+  // Nor by a request stopword with its Hebrew prefix stripped ("היום" -> "יום").
+  assert.equal(chatAllowed({ jid: '972533333333@s.whatsapp.net', name: 'יום' }, c).allowed, false);
   assert.equal(chatAllowed({ jid: '972533333333@s.whatsapp.net', name: 'Today Summary' }, { ...c, triggerText: 'summarize today' }).allowed, false);
   // Substrings are not names.
   const c2 = { ...ctx, triggerText: 'תשלח ליוסיפון' };

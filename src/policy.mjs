@@ -61,7 +61,9 @@ export function chatAllowed(chat, ctx) {
   if (phones.some(p => p.length === 9 && phoneNumbersIn(ctx.triggerText).includes(p))) {
     return { allowed: true, reason: 'number named in request' };
   }
-  const words = text.split(' ').filter(Boolean);
+  // Stopwords are dropped on the request side too: "היום" minus its prefix is "יום",
+  // and a contact called "יום" must not be unlocked by the word "today".
+  const words = text.split(' ').filter(w => w && !STOPWORDS.has(w));
   const full = normalize(chat.name);
   if (full.includes(' ') && nameTokens(chat.name).length && ` ${text} `.includes(` ${full} `)) {
     return { allowed: true, reason: 'name in request' };

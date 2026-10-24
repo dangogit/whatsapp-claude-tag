@@ -4,6 +4,7 @@
 //   seen.json          ids of messages already handled (bounded)
 //   sent.log           ids of messages this tool sent, one per line (loop guard)
 //   pending/<id>.json  approval drafts waiting for a reply, keyed by draft message id
+//   threads.json       sent message id -> Claude session, so a reply continues the run
 //   jobs/<id>/         one directory per run: job.json, actions.jsonl
 
 import fs from 'node:fs';
@@ -11,6 +12,7 @@ import path from 'node:path';
 
 const SEEN_MAX = 3000;
 const SENT_TAIL = 2000;
+const THREADS_MAX = 500;
 
 export function writeJsonAtomic(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -66,6 +68,19 @@ export class AccountStore {
 
   removePending(draftId) {
     fs.rmSync(path.join(this.dir, 'pending', `${safe(draftId)}.json`), { force: true });
+  }
+
+  // Message id of something a run sent -> the Claude session that wrote it.
+  linkThread(messageId, info) {
+    const file = path.join(this.dir, 'threads.json');
+    const threads = readJson(file, {});
+    threads[messageId] = { ...info, t: Date.now() };
+    const keep = Object.entries(threads).sort((a, b) => b[1].t - a[1].t).slice(0, THREADS_MAX);
+    writeJsonAtomic(file, Object.fromEntries(keep));
+  }
+
+  getThread(messageId) {
+    return readJson(path.join(this.dir, 'threads.json'), {})[messageId] || null;
   }
 
   jobDir(jobId) {
