@@ -96,13 +96,16 @@ export class MessageStore {
     this.db = db;
     db.exec(`
       PRAGMA journal_mode = WAL;
+      -- Message ids are chosen by the sending device, so an id alone is not a key:
+      -- someone else's message reusing an id must not overwrite or stand in for ours.
       CREATE TABLE IF NOT EXISTS messages (
-        id TEXT PRIMARY KEY,
+        id TEXT NOT NULL,
         remote_jid TEXT NOT NULL,
         remote_jid_alt TEXT NOT NULL DEFAULT '',
         from_me INTEGER NOT NULL,
         ts INTEGER NOT NULL,
-        record TEXT NOT NULL
+        record TEXT NOT NULL,
+        PRIMARY KEY (id, remote_jid, from_me)
       );
       CREATE INDEX IF NOT EXISTS messages_from_me ON messages (from_me, ts);
       CREATE INDEX IF NOT EXISTS messages_jid ON messages (remote_jid, ts);
@@ -113,8 +116,9 @@ export class MessageStore {
       );
     `);
     this.putStmt = db.prepare(`INSERT INTO messages (id, remote_jid, remote_jid_alt, from_me, ts, record) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT (id) DO UPDATE SET record = excluded.record, ts = excluded.ts`);
-    this.getStmt = db.prepare('SELECT record FROM messages WHERE id = ?');
+      ON CONFLICT (id, remote_jid, from_me) DO UPDATE SET record = excluded.record, ts = excluded.ts`);
+    this.getStmt = db.prepare(`SELECT record FROM messages WHERE id = ? AND from_me = ? AND (remote_jid = ? OR remote_jid_alt = ?)
+      ORDER BY ts DESC LIMIT 1`);
     this.contactStmt = db.prepare(`INSERT INTO contacts (jid, name) VALUES (?, ?)
       ON CONFLICT (jid) DO UPDATE SET name = excluded.name`);
     this.contactIfMissingStmt = db.prepare('INSERT OR IGNORE INTO contacts (jid, name) VALUES (?, ?)');
@@ -129,8 +133,9 @@ export class MessageStore {
     return rec;
   }
 
-  get(id) {
-    const row = this.getStmt.get(String(id));
+  // One message by id within one chat (its JID or alternate JID) and direction.
+  get(id, { jid, fromMe }) {
+    const row = this.getStmt.get(String(id), fromMe ? 1 : 0, String(jid), String(jid));
     return row ? JSON.parse(row.record) : null;
   }
 

@@ -76,8 +76,9 @@ async function makeClient({ open = true, connectWaitMs = 0 } = {}) {
   const client = new BaileysClient([{ instance: 'personal', authDir: path.join(dir, 'auth'), dbFile: path.join(dir, 'personal', 'messages.sqlite') }], {
     log: (level, fields) => logs.push({ level, ...fields }),
     connectWaitMs,
-    makeSocket: async () => {
+    makeSocket: async ({ getMessage }) => {
       const s = new FakeSocket();
+      s.getMessage = getMessage;
       sockets.push(s);
       return s;
     },
@@ -147,11 +148,20 @@ test('MessageStore finds newest first with fromMe, remoteJid (and alt) filters a
   assert.deepEqual(store.find({ key: { remoteJid: GROUP } }, 3, 3).map(r => r.key.id), ['G1']);
   assert.deepEqual(store.find({ key: { remoteJid: PEER } }, 10).map(r => r.key.id), ['D2', 'D1']);
   assert.equal(store.find({}, 100).length, 9);
+  assert.equal(store.find({ key: { fromMe: true } }, 100).length, 3);
 
   // A repeated upsert replaces the row rather than duplicating it.
   store.put(wa({ id: 'G7', chat: GROUP, text: 'g7 edited', ts: 1007 }));
   assert.equal(store.find({ key: { remoteJid: GROUP } }, 100).length, 7);
-  assert.equal(messageText(store.get('G7')), 'g7 edited');
+  assert.equal(messageText(store.get('G7', { jid: GROUP, fromMe: false })), 'g7 edited');
+
+  // Someone else reusing an id neither overwrites our message nor answers for it.
+  store.put(wa({ id: 'G6', chat: PEER, text: 'spoof', ts: 1100 }));
+  assert.equal(messageText(store.get('G6', { jid: GROUP, fromMe: true })), 'g6');
+  assert.equal(store.get('G6', { jid: PEER, fromMe: true }), null);
+  assert.equal(store.get('D1', { jid: PEER, fromMe: false }).key.remoteJid, PEER_LID);
+  store.put(wa({ id: 'G6', chat: GROUP, text: 'spoof in group', ts: 1101 }));
+  assert.equal(messageText(store.get('G6', { jid: GROUP, fromMe: true })), 'g6');
 
   store.prune(1);
   assert.equal(store.find({}, 100).length, 0);
@@ -214,6 +224,17 @@ test('BaileysClient sends, quotes a stored message, deletes, and reports owner a
   await client.sendText('personal', '+972 51-1111111', 'dm', { quotedId: 'NOPE' });
   assert.equal(sock().sent[1].jid, PEER);
   assert.deepEqual(sock().sent[1].opts, {});
+
+  // A trigger id from another chat is not quoted.
+  await client.sendText('personal', PEER_LID, 'elsewhere', { quotedId: 'TRIG' });
+  assert.deepEqual(sock().sent[2].opts, {});
+  sock().sent.pop();
+
+  // A retry request re-sends only our own message, and only to its own chat.
+  const getMessage = sock().getMessage;
+  assert.equal((await getMessage({ id: 'BAE1', remoteJid: GROUP })).extendedTextMessage.text, 'answer');
+  assert.equal(await getMessage({ id: 'BAE1', remoteJid: PEER }), undefined);
+  assert.equal(await getMessage({ id: 'TRIG', remoteJid: PEER }), undefined);
 
   await client.deleteForEveryone('personal', { id: 'TRIG', remoteJid: GROUP, fromMe: true, participant: OWNER });
   assert.deepEqual(sock().sent[2].content, { delete: { id: 'TRIG', remoteJid: GROUP, fromMe: true, participant: OWNER } });

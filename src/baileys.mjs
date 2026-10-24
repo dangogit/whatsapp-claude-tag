@@ -112,8 +112,9 @@ export class BaileysClient {
     c.state = 'connecting';
     const sock = await this.makeSocket({
       authDir: c.authDir,
-      // Baileys asks for a sent message again when a recipient could not decrypt it.
-      getMessage: async key => c.store?.get(key.id)?.message,
+      // Baileys asks for a sent message again when a recipient could not decrypt it. Only
+      // our own message in the chat asking is ever re-sent, never another chat's by id.
+      getMessage: async key => (key?.id && key.remoteJid ? c.store?.get(key.id, { jid: key.remoteJid, fromMe: true })?.message : undefined),
     });
     c.sock = sock;
     sock.ev.on('connection.update', u => this.onUpdate(c, sock, u));
@@ -248,9 +249,11 @@ export class BaileysClient {
   async sendText(instance, number, text, { quotedId } = {}) {
     const c = this.conn(instance);
     const sock = await this.openSock(instance);
-    // Baileys quotes a full message, not an id; an unknown id sends unquoted.
-    const quoted = quotedId ? c.store?.get(quotedId) : null;
-    const sent = await sock.sendMessage(toJid(number), { text }, quoted ? { quoted } : {});
+    // Baileys quotes a full message, not an id. Only the owner's own message in the
+    // target chat is quoted (the trigger); anything else sends unquoted.
+    const jid = toJid(number);
+    const quoted = quotedId ? c.store?.get(quotedId, { jid, fromMe: true }) : null;
+    const sent = await sock.sendMessage(jid, { text }, quoted ? { quoted } : {});
     if (sent) c.store?.put(sent);
     const key = sent?.key || {};
     return { id: key.id, remoteJid: key.remoteJid, fromMe: true };
