@@ -34,8 +34,15 @@ export class AccountWatcher {
     const ownerJid = this.account.ownerChat || await this.client.ownerJid(this.account.instance);
     if (!ownerJid) throw new Error(`cannot tell the owner number of instance ${this.account.instance}`);
     this.ownerChat = ownerJid.includes('@') ? ownerJid : `${ownerJid}@s.whatsapp.net`;
-    this.ownerJids = [this.ownerChat];
+    this.ownerJids = [this.ownerChat, ...this.store.ownerJids().filter(j => j !== this.ownerChat && j.endsWith('@lid'))];
     this.startedAt = Math.floor(this.now() / 1000);
+    // Learn the self-chat LID from recent history now, not at the next self-chat message.
+    try {
+      const recent = await this.client.findMessages(this.account.instance, { key: { fromMe: true } }, 100);
+      for (const rec of recent) if (rec?.key) this.learnOwnerLid(rec.key);
+    } catch (err) {
+      this.log('warn', { account: this.account.name, event: 'owner-lid', error: err.message });
+    }
     this.getNames().catch(err => this.log('warn', { account: this.account.name, event: 'directory', error: err.message }));
   }
 
@@ -109,6 +116,7 @@ export class AccountWatcher {
     if (lid.endsWith('@lid') && key.remoteJidAlt && sameUser(key.remoteJidAlt, this.ownerChat)
       && !this.ownerJids.includes(lid)) {
       this.ownerJids.push(lid);
+      this.store.saveOwnerJids(this.ownerJids);
     }
   }
 

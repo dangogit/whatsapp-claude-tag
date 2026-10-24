@@ -345,3 +345,19 @@ test('the owner LID is learned from self-chat messages and passed to runs', asyn
   await w.drain();
   assert.deepEqual(jobs[0].job.ownerJids, [OWNER, OWNER_LID]);
 });
+
+test('a learned owner LID survives a restart', async () => {
+  const { w, store, client } = await makeWatcher([msg({ id: 'L1', chat: OWNER_LID, alt: OWNER, text: 'note', ts: TS - 1 })]);
+  await w.poll();
+  const again = new AccountWatcher({ ...w, queue: undefined, namesPromise: null });
+  again.queue = Promise.resolve();
+  await again.init();
+  assert.deepEqual(again.ownerJids, [OWNER, OWNER_LID]);
+  assert.deepEqual(store.ownerJids(), [OWNER, OWNER_LID]);
+  assert.ok(client);
+});
+
+test('the owner LID is learned from history at startup', async () => {
+  const { w } = await makeWatcher([msg({ id: 'OLDSELF', chat: OWNER_LID, alt: OWNER, text: 'old note', ts: TS - 86400 })]);
+  assert.deepEqual(w.ownerJids, [OWNER, OWNER_LID]);
+});
