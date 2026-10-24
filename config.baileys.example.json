@@ -1,0 +1,22 @@
+{
+  "transport": "baileys",
+  "baileys": {
+    "authDir": "~/.local/state/whatsapp-claude-tag/baileys",
+    "keepDays": 30
+  },
+  "accounts": [
+    { "name": "personal" }
+  ],
+  "triggers": ["claude"],
+  "language": "en",
+  "timezone": "",
+  "replyPrefix": "",
+  "pollMs": 2000,
+  "stateDir": "~/.local/state/whatsapp-claude-tag",
+  "claude": {
+    "bin": "claude",
+    "model": "sonnet",
+    "timeoutMs": 300000,
+    "fullAccess": false
+  }
+}
