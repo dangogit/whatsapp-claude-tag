@@ -59,12 +59,22 @@ test('send_message to owner goes to the owner chat', async () => {
   assert.equal(client.sent[0].number, OWNER);
 });
 
-test('send_message refuses a chat the owner did not name', async () => {
-  const { client, tools } = setup({ request: 'תסכם ותשלח ליוסי' });
+test('send_message refuses a chat the owner did not name, and receipts a third-chat send', async () => {
+  const { client, store, tools } = setup({ request: 'תסכם ותשלח ליוסי' });
   await assert.rejects(tools.send_message({ chat: '972522222222@s.whatsapp.net', text: 'x' }), /refused: Mallory/);
   await tools.send_message({ chat: '972511111111@s.whatsapp.net', text: 'ok' });
-  assert.equal(client.sent.length, 1);
+  assert.equal(client.sent.length, 2);
   assert.equal(client.sent[0].number, '972511111111@s.whatsapp.net');
+  assert.equal(client.sent[1].number, OWNER);
+  assert.match(client.sent[1].text, /יוסי כהן/);
+  assert.ok(store.sentIds().has('SENT2'));
+});
+
+test('outgoing text that starts with @ cannot re-trigger', async () => {
+  const { client, tools } = setup();
+  await tools.send_message({ chat: 'current', text: '@claude do it again' });
+  assert.equal(client.sent[0].text, '@⁠claude do it again');
+  assert.equal(client.sent.length, 1); // the current chat gets no receipt
 });
 
 test('find_chat marks which candidates are allowed', async () => {

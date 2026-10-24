@@ -6,12 +6,14 @@ const STRINGS = {
     approvedSent: '✅ Sent to {target}.',
     approvalDropped: '🗑️ Dropped, nothing was sent to {target}.',
     approvalFailed: '⚠️ Sending to {target} failed: {error}',
+    sentReceipt: '📤 Sent to {target}.',
   },
   he: {
     failed: '⚠️ @{name} לא הצליח לסיים: {error}',
     approvedSent: '✅ נשלח ל{target}.',
     approvalDropped: '🗑️ בוטל, לא נשלח כלום ל{target}.',
     approvalFailed: '⚠️ השליחה ל{target} נכשלה: {error}',
+    sentReceipt: '📤 נשלח ל{target}.',
   },
 };
 

@@ -20,6 +20,13 @@ export function parseTrigger(text, regex) {
   return { name: m[1], request: m[2].trim() };
 }
 
+// Text this tool sends lands in the owner's chats as a fromMe message, exactly like
+// something the owner typed. A word joiner after a leading "@" keeps it from ever
+// matching a trigger, whatever the configured names are, and looks the same.
+export function defuseTrigger(text) {
+  return String(text).replace(/^([\s‎‏‪-‮]*@)/u, '$1⁠');
+}
+
 const YES = new Set(['כן', 'שלח', 'תשלח', 'מאשר', 'אישור', 'yes', 'y', 'ok', 'send', '👍', '✅']);
 const NO = new Set(['לא', 'בטל', 'אל תשלח', 'no', 'n', 'cancel', '❌', '👎']);
 

@@ -6,7 +6,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const MCP_SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mcp-server.mjs');
-const WEB_TOOLS = ['WebSearch', 'WebFetch'];
+// WebFetch is opt-in: a run that has read chat history could be steered into
+// fetching a URL that carries that history in its query string.
+function webTools(cfg) {
+  return cfg.claude.webFetch ? ['WebSearch', 'WebFetch'] : ['WebSearch'];
+}
 
 export function systemPrompt(job) {
   const n = job.triggerName;
@@ -61,8 +65,8 @@ export function claudeArgs(cfg, job, jobDir) {
   if (cfg.claude.fullAccess) {
     args.push('--permission-mode', 'bypassPermissions');
   } else {
-    args.push('--tools', WEB_TOOLS.join(','));
-    args.push('--allowedTools', ['mcp__whatsapp', ...WEB_TOOLS].join(','));
+    args.push('--tools', webTools(cfg).join(','));
+    args.push('--allowedTools', ['mcp__whatsapp', ...webTools(cfg)].join(','));
     args.push('--permission-mode', 'dontAsk');
   }
   return args;

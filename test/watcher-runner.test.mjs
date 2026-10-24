@@ -156,7 +156,10 @@ const JOB = {
 test('claude args: restricted by default, full access only when configured', () => {
   const dir = tmpDir();
   const args = claudeArgs(config(dir), JOB, '/tmp/job');
-  assert.equal(args[args.indexOf('--tools') + 1], 'WebSearch,WebFetch');
+  assert.equal(args[args.indexOf('--tools') + 1], 'WebSearch');
+  assert.equal(args[args.indexOf('--allowedTools') + 1], 'mcp__whatsapp,WebSearch');
+  const fetchOn = claudeArgs(config(dir, { claude: { webFetch: true } }), JOB, '/tmp/job');
+  assert.equal(fetchOn[fetchOn.indexOf('--tools') + 1], 'WebSearch,WebFetch');
   assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
   assert.ok(args.includes('--strict-mcp-config'));
   const mcp = JSON.parse(args[args.indexOf('--mcp-config') + 1]);

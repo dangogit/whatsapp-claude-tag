@@ -1,8 +1,10 @@
 // The WhatsApp tools a run gets. Every chat a tool touches goes through policy.chatAllowed.
 
-import { chatAllowed } from './policy.mjs';
+import { chatAllowed, sameUser } from './policy.mjs';
 import { searchDirectory, senderName } from './directory.mjs';
 import { appendAction } from './store.mjs';
+import { t } from './strings.mjs';
+import { defuseTrigger } from './trigger.mjs';
 import { isGroupJid, messageText, timestampOf, userPart } from './text.mjs';
 
 const CHAT_ARG = {
@@ -47,11 +49,22 @@ export function createTools(deps) {
     return chat;
   }
 
+  function isOwnChat(chat) {
+    return [job.chat.jid, job.chat.alt, job.ownerChat].some(j => j && (sameUser(j, chat.sendTo) || sameUser(j, chat.jid)));
+  }
+
   async function send(chat, text, opts = {}) {
-    const body = `${job.replyPrefix || ''}${text}`;
+    const body = defuseTrigger(`${job.replyPrefix || ''}${text}`);
     const key = await client.sendText(instance, chat.sendTo, body, opts);
     store.recordSent(key.id);
     appendAction(jobDir, { type: 'send', to: chat.sendTo, name: chat.name, id: key.id || '', chars: body.length });
+    // A send to a third chat is the one action an injected instruction would aim for,
+    // so the owner always gets a receipt for it in their own chat.
+    if (!isOwnChat(chat)) {
+      const receipt = await client.sendText(instance, job.ownerChat,
+        t(job.language, 'sentReceipt', { target: chat.name || userPart(chat.sendTo) }));
+      store.recordSent(receipt.id);
+    }
     return key;
   }
 
@@ -150,7 +163,7 @@ export function createTools(deps) {
         if (!key.id) throw new Error('the draft was not acknowledged by WhatsApp');
         store.addPending(key.id, {
           instance, target: { sendTo: target.sendTo, name: label, group: isGroupJid(target.sendTo) },
-          text: `${job.replyPrefix || ''}${text}`, createdAt: now(), jobId: job.id,
+          text: defuseTrigger(`${job.replyPrefix || ''}${text}`), createdAt: now(), jobId: job.id,
         });
         appendAction(jobDir, { type: 'approval', to: target.sendTo, name: label, id: key.id });
         return `draft posted to the owner for approval (sends to ${label} on "yes")`;

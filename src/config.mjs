@@ -26,6 +26,7 @@ const DEFAULTS = {
     model: 'sonnet',
     timeoutMs: 5 * 60 * 1000,
     fullAccess: false,
+    webFetch: false,
     configDir: '',
   },
 };
@@ -76,6 +77,7 @@ export function normalizeConfig(raw, env = process.env) {
   if (!LANGUAGES.includes(cfg.language)) throw new Error(`config.language must be one of ${LANGUAGES.join(', ')}`);
   if (typeof cfg.replyPrefix !== 'string') throw new Error('config.replyPrefix must be a string');
   cfg.claude.fullAccess = cfg.claude.fullAccess === true;
+  cfg.claude.webFetch = cfg.claude.webFetch === true;
   cfg.stateDir = expandHome(cfg.stateDir);
   cfg.claude.bin = expandHome(cfg.claude.bin);
   cfg.claude.configDir = expandHome(cfg.claude.configDir || path.join(cfg.stateDir, 'claude-home'));

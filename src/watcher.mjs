@@ -9,7 +9,7 @@ import { buildDirectory } from './directory.mjs';
 import { sameUser } from './policy.mjs';
 import { appendAction, readActions, writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
-import { approvalAnswer, parseTrigger } from './trigger.mjs';
+import { approvalAnswer, defuseTrigger, parseTrigger } from './trigger.mjs';
 import { isGroupJid, messageText, quotedId, quotedText, timestampOf, userPart } from './text.mjs';
 
 const CATCH_UP_SECONDS = 10 * 60;
@@ -99,7 +99,7 @@ export class AccountWatcher {
 
   async notifyOwner(text) {
     try {
-      const key = await this.client.sendText(this.account.instance, this.ownerChat, text);
+      const key = await this.client.sendText(this.account.instance, this.ownerChat, defuseTrigger(text));
       this.store.recordSent(key.id);
     } catch (err) {
       this.log('error', { account: this.account.name, event: 'notify-failed', error: err.message });
@@ -141,6 +141,7 @@ export class AccountWatcher {
         quoted: quotedText(rec),
       },
       replyPrefix: this.cfg.replyPrefix,
+      language: this.cfg.language,
       timezone: this.cfg.timezone,
       localTime: nowDate.toLocaleString('sv-SE', { timeZone: this.cfg.timezone }).slice(0, 16),
       createdAt: nowDate.toISOString(),

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { chatAllowed, nameTokens, phoneNumbersIn } from '../src/policy.mjs';
 import { messageText, quotedId, quotedText, userPart } from '../src/text.mjs';
-import { approvalAnswer, buildTriggerRegex, parseTrigger } from '../src/trigger.mjs';
+import { approvalAnswer, buildTriggerRegex, defuseTrigger, parseTrigger } from '../src/trigger.mjs';
 
 const re = buildTriggerRegex(['claude']);
 
@@ -62,6 +62,24 @@ test('policy refuses chats the owner did not name (prompt injection guard)', () 
   const c2 = { ...ctx, triggerText: 'תסכם את השיחה של היום' };
   assert.equal(chatAllowed({ jid: '120363000000000003@g.us', name: 'חברים של דני' }, c2).allowed, false);
   assert.equal(chatAllowed({ jid: '' }, ctx).allowed, false);
+});
+
+test('policy matches whole words only, and never on common request words', () => {
+  const c = { ...ctx, triggerText: '@claude תסכם לי את ההודעות של היום ותשלח לי' };
+  // A contact that named itself after a word the owner types cannot be unlocked by it.
+  assert.equal(chatAllowed({ jid: '972533333333@s.whatsapp.net', name: 'היום' }, c).allowed, false);
+  assert.equal(chatAllowed({ jid: '972533333333@s.whatsapp.net', name: 'Today Summary' }, { ...c, triggerText: 'summarize today' }).allowed, false);
+  // Substrings are not names.
+  const c2 = { ...ctx, triggerText: 'תשלח ליוסיפון' };
+  assert.equal(chatAllowed({ jid: '972511111111@s.whatsapp.net', name: 'יוסי' }, c2).allowed, false);
+  assert.equal(chatAllowed({ jid: '972511111111@s.whatsapp.net', name: 'משה' }, { ...ctx, triggerText: 'תשלח למשה' }).allowed, true);
+  assert.equal(chatAllowed({ jid: '972511111111@s.whatsapp.net', name: 'Dana Levi' }, { ...ctx, triggerText: 'send it to dana' }).allowed, true);
+});
+
+test('defuseTrigger only touches a leading @', () => {
+  assert.equal(parseTrigger(defuseTrigger('@claude x'), re), null);
+  assert.equal(defuseTrigger('hi @claude'), 'hi @claude');
+  assert.equal(parseTrigger(defuseTrigger('‏ @Claude x'), re), null);
 });
 
 test('policy allows a phone number written in the request', () => {

@@ -28,9 +28,11 @@ The chats it reads are written by other people, and a message in a group could s
 - your own chat ("send it to me"),
 - a chat you named in your own `@claude` text, by name or by phone number.
 
-Anything else is refused, and Claude has to tell you so. Text quoted from other people never counts as naming a chat.
+Anything else is refused, and Claude has to tell you so. Text quoted from other people never counts as naming a chat. Names match whole words only (Hebrew prefixes such as ל and ו are allowed), and common request words like "today" or "summary" never count, because other people choose their own display names. Every send to a chat other than the tagged one or your own leaves a receipt in your own chat, so a send you did not expect is visible right away.
 
-By default Claude gets the WhatsApp tools plus `WebSearch` and `WebFetch`, and nothing else: no shell and no file access. Setting `claude.fullAccess: true` gives it all of Claude Code's tools with permissions bypassed. Only turn that on if you accept that a crafted message in a chat you summarize could try to steer it.
+Everything the tool sends has a word joiner inserted after a leading `@`, so its own messages can never trigger another run.
+
+By default Claude gets the WhatsApp tools plus `WebSearch`, and nothing else: no shell, no file access and no `WebFetch`. A run that has read chat history could be steered into fetching a URL that carries that history, so `WebFetch` is opt-in (`claude.webFetch: true`). Setting `claude.fullAccess: true` gives it all of Claude Code's tools with permissions bypassed. Only turn that on if you accept that a crafted message in a chat you summarize could try to steer it.
 
 Each run uses its own Claude Code config directory (`claude.configDir`), so your personal hooks, plugins and MCP servers do not load into it.
 
@@ -100,6 +102,7 @@ Logs go to `~/Library/Logs/whatsapp-claude-tag/`. On Linux, run `deploy/start.sh
 | `claude.bin` | `claude` | Path to the Claude Code CLI. |
 | `claude.model` | `sonnet` | Model for runs. |
 | `claude.timeoutMs` | `300000` | A run that takes longer is stopped, and you get a short failure note. |
+| `claude.webFetch` | `false` | Also give runs `WebFetch`. See the safety model above. |
 | `claude.fullAccess` | `false` | See the safety model above. |
 | `claude.configDir` | `<stateDir>/claude-home` | `CLAUDE_CONFIG_DIR` for runs. |
 
