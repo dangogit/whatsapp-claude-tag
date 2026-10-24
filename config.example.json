@@ -1,0 +1,22 @@
+{
+  "evolution": {
+    "url": "http://127.0.0.1:8080",
+    "apiKeyEnv": "EVOLUTION_API_KEY",
+    "envFile": ""
+  },
+  "accounts": [
+    { "name": "personal", "instance": "my-instance" }
+  ],
+  "triggers": ["claude"],
+  "language": "en",
+  "timezone": "",
+  "replyPrefix": "",
+  "pollMs": 2000,
+  "stateDir": "~/.local/state/whatsapp-claude-tag",
+  "claude": {
+    "bin": "claude",
+    "model": "sonnet",
+    "timeoutMs": 300000,
+    "fullAccess": false
+  }
+}
