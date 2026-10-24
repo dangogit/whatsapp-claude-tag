@@ -47,7 +47,7 @@ An Anthropic API key (`ANTHROPIC_API_KEY`) works as well. Runs then bill to the 
 
 ## 3. Start Evolution API
 
-Evolution API connects your number through WhatsApp Web and keeps the message history the tool reads. Skip this step if you already run Evolution v2. In that case it must have Redis enabled and `DATABASE_SAVE_DATA_NEW_MESSAGE`, `DATABASE_SAVE_DATA_CONTACTS` and `DATABASE_SAVE_DATA_CHATS` set to `true`, and you need its URL and API key.
+Evolution API connects your number through WhatsApp Web and keeps the message history the tool reads. If the person does not want Docker, use the Baileys transport instead and follow [Without Evolution: Baileys](README.md#without-evolution-baileys) in place of steps 3 to 5 (it needs Node 22.13 or newer, and sees history only from pairing onward). Skip this step if you already run Evolution v2. In that case it must have Redis enabled and `DATABASE_SAVE_DATA_NEW_MESSAGE`, `DATABASE_SAVE_DATA_CONTACTS` and `DATABASE_SAVE_DATA_CHATS` set to `true`, and you need its URL and API key.
 
 ```bash
 cd ~/whatsapp-claude-tag/deploy/evolution

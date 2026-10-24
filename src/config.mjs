@@ -12,7 +12,11 @@ export function defaultConfigPath() {
   return process.env.WCT_CONFIG || path.join(os.homedir(), '.config', 'whatsapp-claude-tag', 'config.json');
 }
 
+export const TRANSPORTS = ['evolution', 'baileys'];
+
 const DEFAULTS = {
+  transport: 'evolution',
+  baileys: { authDir: '', keepDays: 30 },
   evolution: { url: 'http://127.0.0.1:8080', apiKeyEnv: 'EVOLUTION_API_KEY', envFile: '' },
   accounts: [],
   triggers: ['claude'],
@@ -49,23 +53,31 @@ export function normalizeConfig(raw, env = process.env) {
     ...DEFAULTS,
     ...raw,
     evolution: { ...DEFAULTS.evolution, ...(raw.evolution || {}) },
+    baileys: { ...DEFAULTS.baileys, ...(raw.baileys || {}) },
     claude: { ...DEFAULTS.claude, ...(raw.claude || {}) },
   };
 
+  if (!TRANSPORTS.includes(cfg.transport)) throw new Error(`config.transport must be one of ${TRANSPORTS.join(', ')}`);
+  const baileys = cfg.transport === 'baileys';
   if (!Array.isArray(cfg.accounts) || !cfg.accounts.length) {
-    throw new Error('config.accounts must list at least one { name, instance }');
+    throw new Error(`config.accounts must list at least one ${baileys ? '{ name }' : '{ name, instance }'}`);
   }
   const names = new Set();
   cfg.accounts = cfg.accounts.map((a, i) => {
-    if (!a || typeof a.instance !== 'string' || !a.instance) {
-      throw new Error(`config.accounts[${i}].instance is required`);
-    }
-    const name = typeof a.name === 'string' && a.name ? a.name : a.instance;
+    if (!a || typeof a !== 'object') throw new Error(`config.accounts[${i}] must be an object`);
+    // With Baileys the instance names the account's auth directory, so it defaults to the name.
+    const instance = typeof a.instance === 'string' && a.instance ? a.instance : baileys && typeof a.name === 'string' ? a.name : '';
+    if (!instance) throw new Error(`config.accounts[${i}].instance is required`);
+    if (baileys && !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(instance)) throw new Error(`invalid account instance "${instance}"`);
+    const name = typeof a.name === 'string' && a.name ? a.name : instance;
     if (!/^[a-z0-9][a-z0-9_-]{0,31}$/i.test(name)) throw new Error(`invalid account name "${name}"`);
     if (names.has(name)) throw new Error(`duplicate account name "${name}"`);
     names.add(name);
-    return { name, instance: a.instance, ownerChat: typeof a.ownerChat === 'string' ? a.ownerChat : '' };
+    return { name, instance, ownerChat: typeof a.ownerChat === 'string' ? a.ownerChat : '' };
   });
+  if (baileys && new Set(cfg.accounts.map(a => a.instance)).size !== cfg.accounts.length) {
+    throw new Error('config.accounts must not share an instance');
+  }
 
   if (!Array.isArray(cfg.triggers) || !cfg.triggers.every(t => typeof t === 'string' && t.trim())) {
     throw new Error('config.triggers must be a list of names, for example ["claude"]');
@@ -82,6 +94,14 @@ export function normalizeConfig(raw, env = process.env) {
   cfg.claude.bin = expandHome(cfg.claude.bin);
   cfg.claude.configDir = expandHome(cfg.claude.configDir || path.join(cfg.stateDir, 'claude-home'));
   cfg.timezone = cfg.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  if (baileys) {
+    if (!Number.isInteger(cfg.baileys.keepDays) || cfg.baileys.keepDays < 1) {
+      throw new Error('config.baileys.keepDays must be an integer >= 1');
+    }
+    cfg.baileys.authDir = expandHome(cfg.baileys.authDir || path.join(cfg.stateDir, 'baileys'));
+    return cfg;
+  }
 
   let apiKey = env[cfg.evolution.apiKeyEnv] || '';
   if (!apiKey && cfg.evolution.envFile) {

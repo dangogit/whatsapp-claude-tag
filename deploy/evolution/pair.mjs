@@ -4,7 +4,8 @@
 //   node deploy/evolution/pair.mjs --instance personal [--url http://127.0.0.1:8080] [--env-file deploy/evolution/.env]
 //
 // The API key comes from EVOLUTION_API_KEY, or from AUTHENTICATION_API_KEY in --env-file.
-// The QR is written to qr-<instance>.png next to this script and opened when possible.
+// The QR is written to qr-<instance>.png next to this script (mode 600), opened when
+// possible, and deleted when the script exits.
 // On the phone: WhatsApp > Settings > Linked devices > Link a device, then scan it.
 // Exits 0 once the instance is "open", 1 on error, 2 when pairing timed out.
 
@@ -55,17 +56,24 @@ async function exists(client, instance) {
   return (Array.isArray(list) ? list : []).some(i => i?.name === instance || i?.instance?.instanceName === instance);
 }
 
+function qrPath(instance) {
+  return path.join(HERE, `qr-${instance}.png`);
+}
+
 async function writeQr(client, instance) {
   const data = await client.request('GET', `/instance/connect/${encodeURIComponent(instance)}`);
   const b64 = String(data?.base64 || '').replace(/^data:image\/png;base64,/, '');
   if (!b64) return '';
-  const file = path.join(HERE, `qr-${instance}.png`);
-  fs.writeFileSync(file, Buffer.from(b64, 'base64'));
+  // A live QR is a login for whoever scans it first: owner-only, and removed on exit.
+  const file = qrPath(instance);
+  fs.rmSync(file, { force: true });
+  fs.writeFileSync(file, Buffer.from(b64, 'base64'), { mode: 0o600 });
   return file;
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  instanceName = args.instance;
   const key = apiKey(args);
   if (!key) throw new Error('no API key: set EVOLUTION_API_KEY or pass --env-file with AUTHENTICATION_API_KEY');
   const client = new EvolutionClient({ url: args.url, apiKey: key });
@@ -98,7 +106,6 @@ async function main() {
     await new Promise(r => setTimeout(r, 3000));
     const state = await client.connectionState(args.instance);
     if (state === 'open') {
-      fs.rmSync(path.join(HERE, `qr-${args.instance}.png`), { force: true });
       console.log(`${args.instance} is connected`);
       return 0;
     }
@@ -107,7 +114,12 @@ async function main() {
   return 2;
 }
 
+let instanceName = '';
+const cleanup = () => { if (instanceName) fs.rmSync(qrPath(instanceName), { force: true }); };
+process.on('SIGINT', () => { cleanup(); process.exit(130); });
+process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+
 main().then(code => { process.exitCode = code; }, err => {
   console.error(`pair: ${err.message}`);
   process.exitCode = 1;
-});
+}).finally(cleanup);
