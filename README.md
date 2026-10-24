@@ -51,34 +51,32 @@ If your request asks for confirmation, Claude does not send. It posts a draft to
 
 Swipe-reply to anything a run sent and the same Claude session continues, so you can answer its questions ("which group?") or ask for changes. In your own chat a plain reply is enough. In any other chat, start the reply with `@claude`, because there you might just be quoting the message to the people you are talking to.
 
-## Requirements
+## Install
 
-- Node.js 20 or newer for Evolution, 22.13 or newer for Baileys
-- [Claude Code](https://docs.claude.com/en/docs/claude-code) installed and authenticated for headless use: `claude setup-token`, then export `CLAUDE_CODE_OAUTH_TOKEN`, or set `ANTHROPIC_API_KEY`
-- Either an Evolution API v2 server with your WhatsApp number connected, and its API key, or a phone to scan a QR code for Baileys
+**With Claude Code (recommended):** open Claude Code on the machine that will run it and say:
 
-With Evolution there are no npm dependencies. Baileys and `qrcode-terminal` are optional dependencies, loaded only when `transport` is `"baileys"`.
+> Install whatsapp-claude-tag on this machine by following INSTALL.md in https://github.com/dangogit/whatsapp-claude-tag
 
-## Setup
+[INSTALL.md](INSTALL.md) is written for an agent to follow. It sets up everything and stops only for the two steps that need you: `claude setup-token` and scanning a QR code with your phone.
 
-```bash
-git clone https://github.com/dangogit/whatsapp-claude-tag.git
-cd whatsapp-claude-tag
-mkdir -p ~/.config/whatsapp-claude-tag
-cp config.example.json ~/.config/whatsapp-claude-tag/config.json
-```
+**What it sets up:**
 
-Edit the config: set `accounts[].instance` to your Evolution instance name, and give it the API key, either in the `EVOLUTION_API_KEY` environment variable or through `evolution.envFile` pointing at a `.env` file that contains it.
+- Node.js 20 or newer (22.13 or newer if you choose Baileys). With Evolution there are no npm dependencies; Baileys and `qrcode-terminal` are optional dependencies, loaded only when `transport` is `"baileys"`.
+- [Claude Code](https://docs.claude.com/en/docs/claude-code), authenticated for headless use with `claude setup-token` (or `ANTHROPIC_API_KEY`).
+- A WhatsApp connection, one of two:
+  - **Evolution API v2** (the default, and what INSTALL.md sets up), the WhatsApp Web gateway. `deploy/evolution/` has a ready Docker Compose file (API, Postgres and Redis, bound to `127.0.0.1`, pinned to v2.3.7) and `pair.mjs`, which creates the instance and shows the QR to scan. Already running Evolution? Point the config at it instead.
+  - **Baileys**, no Docker: the watcher connects directly. See [Without Evolution: Baileys](#without-evolution-baileys).
+- The watcher as a service: `deploy/install-launchd.sh` on macOS, or a systemd user unit on Linux (example in INSTALL.md).
 
-Check everything is reachable:
+**By hand, in short:**
 
 ```bash
+git clone https://github.com/dangogit/whatsapp-claude-tag.git && cd whatsapp-claude-tag
+cd deploy/evolution && cp .env.example .env    # set both secrets, then:
+docker compose up -d && cd ../..
+node deploy/evolution/pair.mjs --instance personal    # scan the QR on your phone
+mkdir -p ~/.config/whatsapp-claude-tag && cp config.example.json ~/.config/whatsapp-claude-tag/config.json    # edit it
 node src/cli.mjs check
-```
-
-Run it in the foreground:
-
-```bash
 node src/cli.mjs run
 ```
 
@@ -105,22 +103,7 @@ What is different from Evolution:
 - **Storage** uses Node's built-in `node:sqlite` rather than an npm package, so there is no native module to build; that is why this transport needs Node 22.13 or newer. Baileys is pinned to `7.0.0-rc14`, the current `latest` release on npm. It is a release candidate, but it is the line that handles WhatsApp's LID addressing, which the owner-chat detection depends on.
 - The connection does not mark you online, so your phone keeps getting notifications.
 
-### Run as a service (macOS)
-
-Put the environment the service needs in `~/.config/whatsapp-claude-tag/env.sh`, which `deploy/start.sh` sources:
-
-```sh
-export CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME/.claude/headless-token")"
-export EVOLUTION_API_KEY="..."
-```
-
-Keep that file `chmod 600`. Then install the LaunchAgent:
-
-```bash
-deploy/install-launchd.sh
-```
-
-Logs go to `~/Library/Logs/whatsapp-claude-tag/`. On Linux, run `deploy/start.sh` from a systemd user unit with `Restart=always`.
+As a service, the Baileys setup uses the same `deploy/install-launchd.sh` or systemd unit as in INSTALL.md; `env.sh` only needs the Claude token.
 
 ## Configuration
 

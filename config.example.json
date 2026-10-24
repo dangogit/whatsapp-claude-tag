@@ -1,13 +1,18 @@
 {
   "evolution": {
     "url": "http://127.0.0.1:8080",
-    "apiKeyEnv": "EVOLUTION_API_KEY",
-    "envFile": ""
+    "apiKeyEnv": "AUTHENTICATION_API_KEY",
+    "envFile": "~/whatsapp-claude-tag/deploy/evolution/.env"
   },
   "accounts": [
-    { "name": "personal", "instance": "my-instance" }
+    {
+      "name": "personal",
+      "instance": "personal"
+    }
   ],
-  "triggers": ["claude"],
+  "triggers": [
+    "claude"
+  ],
   "language": "en",
   "timezone": "",
   "replyPrefix": "",
