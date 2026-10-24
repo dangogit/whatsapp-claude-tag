@@ -7,6 +7,8 @@ const STRINGS = {
     approvalDropped: '🗑️ Dropped, nothing was sent to {target}.',
     approvalFailed: '⚠️ Sending to {target} failed: {error}',
     sentReceipt: '📤 Sent to {target}.',
+    draft: '📝 Draft for {target}:\n\n{text}\n\nReply to this message with "yes" to send it or "no" to drop it.',
+    you: 'you',
   },
   he: {
     failed: '⚠️ @{name} לא הצליח לסיים: {error}',
@@ -14,6 +16,8 @@ const STRINGS = {
     approvalDropped: '🗑️ בוטל, לא נשלח כלום ל{target}.',
     approvalFailed: '⚠️ השליחה ל{target} נכשלה: {error}',
     sentReceipt: '📤 נשלח ל{target}.',
+    draft: '📝 טיוטה ל{target}:\n\n{text}\n\nתגיב להודעה הזו ב"כן" כדי לשלוח או ב"לא" כדי לבטל.',
+    you: 'עצמך',
   },
 };
 

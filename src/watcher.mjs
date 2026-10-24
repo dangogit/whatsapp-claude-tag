@@ -73,10 +73,11 @@ export class AccountWatcher {
       }
     }
     const trig = parseTrigger(text, this.regex);
-    // A swipe-reply to something a run sent continues that run's conversation,
-    // with or without "@claude" in front.
+    // A swipe-reply to something a run sent continues that run's conversation. In the
+    // owner's own chat no "@claude" is needed; anywhere else it still is, because there
+    // the owner may simply be quoting the message while talking to people.
     const thread = qid ? this.store.getThread(qid) : null;
-    if (thread && text.trim()) {
+    if (thread && text.trim() && (trig || this.isOwnerChat(rec.key))) {
       this.enqueue(rec, { name: thread.triggerName || this.cfg.triggers[0], request: trig ? trig.request : text.trim() }, thread);
       return;
     }

@@ -156,8 +156,8 @@ export function createTools(deps) {
       async handler({ chat, text }) {
         if (!String(text || '').trim()) throw new Error('text is empty');
         const target = await resolve(chat);
-        const label = target.name || userPart(target.sendTo);
-        const draft = `📝 Draft for ${label}:\n\n${text}\n\nReply to this message with "yes" to send or "no" to drop it.`;
+        const label = target.name === 'owner' ? t(job.language, 'you') : target.name || userPart(target.sendTo);
+        const draft = t(job.language, 'draft', { target: label, text });
         const key = await client.sendText(instance, job.ownerChat, draft);
         store.recordSent(key.id);
         if (!key.id) throw new Error('the draft was not acknowledged by WhatsApp');

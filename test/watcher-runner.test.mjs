@@ -236,6 +236,23 @@ test('a swipe-reply to a run\'s message continues that session and keeps earlier
   assert.equal(seen[0].trigger.earlier, 'תשלח ליוסי סיכום');
 });
 
+test('outside the owner chat, quoting a run\'s message needs @claude to continue', async () => {
+  const { w, client, store } = await makeWatcher([]);
+  store.linkThread('BOT1', { jobId: 'J0', sessionId: 'sess-9', triggerName: 'claude', requests: 'תסכם' });
+  const seen = [];
+  w.runJob = async (c, job) => { seen.push(job); return { ok: true, result: '' }; };
+  client.messages.push(msg({ id: 'G1', chat: GROUP, text: 'כמו שכתבתי פה', ts: TS - 2, quotedStanza: 'BOT1' }));
+  await w.poll();
+  await w.queue;
+  assert.equal(seen.length, 0);
+  client.messages.push(msg({ id: 'G2', chat: GROUP, text: '@claude תרחיב', ts: TS - 1, quotedStanza: 'BOT1' }));
+  await w.poll();
+  await w.queue;
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].resumeSessionId, 'sess-9');
+  assert.equal(seen[0].trigger.request, 'תרחיב');
+});
+
 test('runClaude reports errors and timeouts instead of throwing', async () => {
   const dir = tmpDir();
   const jobDir = path.join(dir, 'job');
