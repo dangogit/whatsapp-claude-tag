@@ -36,7 +36,14 @@ cat > "$PLIST" <<EOF
 </plist>
 EOF
 
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+TARGET="gui/$(id -u)/$LABEL"
+if launchctl print "$TARGET" >/dev/null 2>&1; then
+  # bootout returns before the old process has exited, and a running request may
+  # take up to ExitTimeOut to finish; bootstrap fails while the label still exists.
+  launchctl bootout "$TARGET" 2>/dev/null || true
+  i=0
+  while launchctl print "$TARGET" >/dev/null 2>&1 && [ "$i" -lt 340 ]; do sleep 1; i=$((i + 1)); done
+fi
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo "installed $PLIST"
 echo "logs: $LOGS/out.log"
