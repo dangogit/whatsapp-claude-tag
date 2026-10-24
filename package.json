@@ -1,0 +1,23 @@
+{
+  "name": "whatsapp-claude-tag",
+  "version": "0.1.0",
+  "description": "Tag @claude in any WhatsApp chat from your own phone and Claude Code does what you asked.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "whatsapp-claude-tag": "src/cli.mjs"
+  },
+  "files": [
+    "src",
+    "config.example.json",
+    "deploy"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/cli.mjs run",
+    "check": "node src/cli.mjs check",
+    "test": "node --test --test-concurrency=2 test/*.test.mjs"
+  }
+}
