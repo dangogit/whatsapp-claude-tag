@@ -1,0 +1,80 @@
+# Evolution API v2 for whatsapp-claude-tag: the API, Postgres and Redis.
+#
+#   cp .env.example .env      # then set both secrets in .env
+#   docker compose up -d
+#
+# Pinned to v2.3.7, the latest stable release. From 2.4.0 the API asks for a
+# license key before instances work, so do not switch this to :latest blindly.
+# The API listens on 127.0.0.1 only: never publish it on 0.0.0.0.
+
+name: whatsapp-evolution
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: evolution
+    volumes:
+      - evolution-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "evolution"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Evolution v2 needs Redis for QR codes: without it /instance/connect keeps
+  # returning {"count": 0} and no QR ever appears.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - evolution-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  evolution:
+    image: evoapicloud/evolution-api:v2.3.7
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${EVOLUTION_PORT:-8080}:8080"
+    environment:
+      AUTHENTICATION_API_KEY: ${AUTHENTICATION_API_KEY:?set AUTHENTICATION_API_KEY in .env}
+      AUTHENTICATION_TYPE: apikey
+      SERVER_URL: http://127.0.0.1:${EVOLUTION_PORT:-8080}
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://evolution:${POSTGRES_PASSWORD}@postgres:5432/evolution?schema=evolution_api
+      DATABASE_CONNECTION_CLIENT_NAME: whatsapp-claude-tag
+      # whatsapp-claude-tag reads chats, contacts and message history from this database.
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "true"
+      DATABASE_SAVE_MESSAGE_UPDATE: "true"
+      DATABASE_SAVE_DATA_CONTACTS: "true"
+      DATABASE_SAVE_DATA_CHATS: "true"
+      DATABASE_SAVE_DATA_HISTORIC: "true"
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://redis:6379/6
+      CACHE_REDIS_PREFIX_KEY: evolution
+      CACHE_LOCAL_ENABLED: "false"
+      DEL_INSTANCE: "false"
+      QRCODE_LIMIT: "30"
+      LOG_LEVEL: ERROR,WARN,INFO
+    volumes:
+      - evolution-instances:/evolution/instances
+
+volumes:
+  evolution-pg:
+  evolution-redis:
+  evolution-instances:
