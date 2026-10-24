@@ -29,25 +29,37 @@ export function createTools(deps) {
     triggerText: [job.trigger.earlier, job.trigger.request].filter(Boolean).join('\n'),
   };
 
+  // The owner chat holds drafts, receipts and other runs' private answers, so a run
+  // may always write to it but may read it only when it was triggered there.
+  const readCtx = { ...policyCtx, ownerChat: job.chat.isOwnerChat ? job.ownerJids : [] };
+
   // Resolves a chat argument to { jid, alt, name, sendTo } and checks policy.
-  async function resolve(arg) {
+  async function resolve(arg, { forRead = false } = {}) {
     const raw = String(arg || '').trim();
     if (!raw) throw new Error('chat is required');
     if (raw === 'current') {
       return { jid: job.chat.jid, alt: job.chat.alt, name: job.chat.name, sendTo: job.chat.sendTo };
     }
-    if (raw === 'owner') return { jid: job.ownerChat, alt: '', name: 'owner', sendTo: job.ownerChat };
+    if (raw === 'owner') {
+      if (forRead && !job.chat.isOwnerChat) throw new Error('refused: the owner\'s private chat can only be read from inside it.');
+      return { jid: job.ownerChat, alt: '', name: 'owner', sendTo: job.ownerChat };
+    }
     let jid = raw;
     if (/^\+?[\d\s-]{7,}$/.test(raw)) jid = `${raw.replace(/\D/g, '')}@s.whatsapp.net`;
     if (!jid.includes('@')) throw new Error(`"${raw}" is not a JID. Call find_chat first.`);
     const names = await deps.getNames();
     const chat = { jid, alt: '', name: names.get(jid) || '', sendTo: jid };
-    const verdict = chatAllowed(chat, policyCtx);
+    const verdict = chatAllowed(chat, forRead ? readCtx : policyCtx);
     if (!verdict.allowed) {
       throw new Error(`refused: ${chat.name || jid} - ${verdict.reason}. Tell the owner to name the chat in the request.`);
     }
     return chat;
   }
+
+  const threadInfo = {
+    jobId: job.id, triggerName: job.triggerName,
+    requests: [job.trigger.earlier, job.trigger.request].filter(Boolean).join('\n').slice(-4000),
+  };
 
   function isOwnChat(chat) {
     return [job.chat.jid, job.chat.alt, job.ownerChat].some(j => j && (sameUser(j, chat.sendTo) || sameUser(j, chat.jid)));
@@ -58,12 +70,19 @@ export function createTools(deps) {
     const key = await client.sendText(instance, chat.sendTo, body, opts);
     store.recordSent(key.id);
     appendAction(jobDir, { type: 'send', to: chat.sendTo, name: chat.name, id: key.id || '', chars: body.length });
+    // Linked now, not when the run ends: the owner may answer while the run is still going.
+    if (key.id) store.linkThread(key.id, threadInfo);
     // A send to a third chat is the one action an injected instruction would aim for,
-    // so the owner always gets a receipt for it in their own chat.
+    // so the owner always gets a receipt for it in their own chat. The message is
+    // already out, so a failed receipt must not turn into an error Claude retries.
     if (!isOwnChat(chat)) {
-      const receipt = await client.sendText(instance, job.ownerChat,
-        t(job.language, 'sentReceipt', { target: chat.name || userPart(chat.sendTo) }));
-      store.recordSent(receipt.id);
+      try {
+        const receipt = await client.sendText(instance, job.ownerChat,
+          t(job.language, 'sentReceipt', { target: chat.name || userPart(chat.sendTo) }));
+        store.recordSent(receipt.id);
+      } catch (err) {
+        appendAction(jobDir, { type: 'receipt-failed', error: String(err.message).slice(0, 200) });
+      }
     }
     return key;
   }
@@ -99,7 +118,7 @@ export function createTools(deps) {
         required: ['chat'],
       },
       async handler({ chat, hours = 24, limit = 300 }) {
-        const target = await resolve(chat);
+        const target = await resolve(chat, { forRead: true });
         const h = Math.min(Math.max(Number(hours) || 24, 0.1), 336);
         const n = Math.min(Math.max(Math.trunc(Number(limit) || 300), 1), 1000);
         const since = Math.floor(now() / 1000 - h * 3600);

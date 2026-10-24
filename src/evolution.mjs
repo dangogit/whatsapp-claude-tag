@@ -27,8 +27,8 @@ export class EvolutionClient {
   }
 
   // Newest first. Evolution pages with `page` and uses `offset` as the page size.
-  async findMessages(instance, where = {}, limit = 50) {
-    const data = await this.request('POST', `/chat/findMessages/${enc(instance)}`, { where, page: 1, offset: limit });
+  async findMessages(instance, where = {}, limit = 50, page = 1) {
+    const data = await this.request('POST', `/chat/findMessages/${enc(instance)}`, { where, page, offset: limit });
     const msgs = data?.messages ?? data;
     const records = Array.isArray(msgs?.records) ? msgs.records : Array.isArray(msgs) ? msgs : [];
     return records.slice(0, limit);

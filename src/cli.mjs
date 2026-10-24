@@ -6,7 +6,7 @@ import path from 'node:path';
 import { defaultConfigPath, expandHome, loadConfig } from './config.mjs';
 import { EvolutionClient } from './evolution.mjs';
 import { runClaude } from './runner.mjs';
-import { AccountStore } from './store.mjs';
+import { AccountStore, acquireLock } from './store.mjs';
 import { buildTriggerRegex } from './trigger.mjs';
 import { AccountWatcher } from './watcher.mjs';
 
@@ -54,6 +54,7 @@ async function check(cfg) {
 }
 
 async function run(cfg) {
+  const releaseLock = acquireLock(cfg.stateDir);
   const client = new EvolutionClient({ url: cfg.evolution.url, apiKey: cfg.evolution.apiKey });
   const regex = buildTriggerRegex(cfg.triggers);
   const watchers = [];
@@ -63,16 +64,19 @@ async function run(cfg) {
       store: new AccountStore(cfg.stateDir, account.name),
     });
     await w.init();
+    await w.reportInterrupted();
     watchers.push(w);
     log('info', { account: account.name, event: 'watching', instance: account.instance, ownerChat: w.ownerChat });
   }
 
+  // Finish the poll in flight and every queued run before exiting. The LaunchAgent's
+  // ExitTimeOut gives this the length of one run.
   let stopping = false;
   const stop = sig => {
     if (stopping) process.exit(1);
     stopping = true;
     log('info', { event: 'stopping', signal: sig });
-    Promise.all(watchers.map(w => w.queue)).finally(() => process.exit(0));
+    Promise.all(watchers.map(w => w.drain())).finally(() => { releaseLock(); process.exit(0); });
   };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);

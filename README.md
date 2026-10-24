@@ -30,7 +30,11 @@ The chats it reads are written by other people, and a message in a group could s
 
 Anything else is refused, and Claude has to tell you so. Text quoted from other people never counts as naming a chat. Names match whole words only (Hebrew prefixes such as ל and ו are allowed), and common request words like "today" or "summary" never count, because other people choose their own display names. Every send to a chat other than the tagged one or your own leaves a receipt in your own chat, so a send you did not expect is visible right away.
 
+Your own chat holds drafts, receipts and answers from other runs, so a run can always write to it but can only read it when you tagged it there.
+
 Everything the tool sends has a word joiner inserted after a leading `@`, so its own messages can never trigger another run.
+
+Name matching is a guard, not a guarantee: the stopword list cannot cover every word you might type, and a contact can pick any display name. The receipt is what makes a wrong send visible. For anything sensitive, name the recipient by phone number or ask for approval.
 
 By default Claude gets the WhatsApp tools plus `WebSearch`, and nothing else: no shell, no file access and no `WebFetch`. A run that has read chat history could be steered into fetching a URL that carries that history, so `WebFetch` is opt-in (`claude.webFetch: true`). Setting `claude.fullAccess: true` gives it all of Claude Code's tools with permissions bypassed. Only turn that on if you accept that a crafted message in a chat you summarize could try to steer it.
 
@@ -38,7 +42,11 @@ Each run uses its own Claude Code config directory (`claude.configDir`), so your
 
 ## Approvals
 
-If your request asks for confirmation, Claude does not send. It posts a draft to your own chat instead. Swipe-reply to the draft with `yes` / `כן` to send it, or `no` / `לא` to drop it. The watcher sends the stored draft itself, without another Claude run, so what you approved is exactly what goes out.
+If your request asks for confirmation, Claude does not send. It posts a draft to your own chat instead. Swipe-reply to the draft with `yes` / `כן` to send it, or `no` / `לא` to drop it. The watcher sends the stored draft itself, without another Claude run, so what you approved is exactly what goes out. Drafts expire after a day.
+
+## Follow-ups
+
+Swipe-reply to anything a run sent and the same Claude session continues, so you can answer its questions ("which group?") or ask for changes. In your own chat a plain reply is enough. In any other chat, start the reply with `@claude`, because there you might just be quoting the message to the people you are talking to.
 
 ## Requirements
 
@@ -110,7 +118,9 @@ Logs go to `~/Library/Logs/whatsapp-claude-tag/`. On Linux, run `deploy/start.sh
 
 - It reads history from Evolution's database, so `read_chat` sees only what Evolution stored since the number was connected.
 - Text only. Media show up as `[image]`, `[audio]` and so on.
-- Each run starts fresh: a second `@claude` does not remember the first.
+- A new `@claude` starts a fresh conversation. Only a swipe-reply continues one.
+- Every message from your number counts as yours, including ones another API client sends through the same Evolution instance. Make sure nothing else on that instance sends text that starts with `@claude`.
+- If the service stops in the middle of a run, that run is not retried, because it may already have sent something. You get a note in your own chat instead. Only one watcher can run per state directory.
 - Your phone shows its sends as sent by you, and everyone in the chat sees them. Use `replyPrefix` if you want them marked.
 
 ## Development

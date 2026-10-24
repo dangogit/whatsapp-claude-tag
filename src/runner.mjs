@@ -57,8 +57,9 @@ export function claudeArgs(cfg, job, jobDir) {
       },
     },
   };
+  // The request itself goes in on stdin (see runClaude), so it never shows in `ps`.
   const args = [
-    '-p', userPrompt(job),
+    '-p',
     '--system-prompt', systemPrompt(job),
     '--output-format', 'json',
     '--model', cfg.claude.model,
@@ -95,12 +96,14 @@ export function runClaude(cfg, job, jobDir, { spawnImpl = spawn } = {}) {
       child = spawnImpl(cfg.claude.bin, claudeArgs(cfg, job, jobDir), {
         cwd,
         env: { ...process.env, CLAUDE_CONFIG_DIR: cfg.claude.configDir },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (e) {
       done({ ok: false, error: `cannot start ${cfg.claude.bin}: ${e.message}` });
       return;
     }
+    child.stdin.on('error', () => { /* reported through close/error */ });
+    child.stdin.end(userPrompt(job));
     timer = setTimeout(() => {
       child.kill('SIGTERM');
       setTimeout(() => child.kill('SIGKILL'), 5000).unref();

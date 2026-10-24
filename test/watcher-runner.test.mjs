@@ -6,7 +6,7 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { normalizeConfig } from '../src/config.mjs';
 import { claudeArgs, runClaude, userPrompt } from '../src/runner.mjs';
-import { AccountStore, appendAction } from '../src/store.mjs';
+import { AccountStore, acquireLock, appendAction } from '../src/store.mjs';
 import { buildTriggerRegex } from '../src/trigger.mjs';
 import { AccountWatcher } from '../src/watcher.mjs';
 import { FakeClient, OWNER, OWNER_LID, msg, tmpDir } from './helpers.mjs';
@@ -121,7 +121,7 @@ test('a failed run tells the owner, in the configured language', async () => {
 
 test('approval: a quoted "כן" in the owner chat sends the stored draft once', async () => {
   const { w, client, store } = await makeWatcher([]);
-  store.addPending('DRAFT1', { target: { sendTo: '972511111111@s.whatsapp.net', name: 'יוסי' }, text: 'אני מאחר' });
+  store.addPending('DRAFT1', { target: { sendTo: '972511111111@s.whatsapp.net', name: 'יוסי' }, text: 'אני מאחר', createdAt: NOW });
   client.messages.push(msg({ id: 'R1', chat: OWNER_LID, alt: OWNER, text: 'כן', ts: TS - 1, quotedStanza: 'DRAFT1' }));
   await w.poll();
   assert.equal(client.sent[0].number, '972511111111@s.whatsapp.net');
@@ -178,6 +178,9 @@ test('the user prompt fences the quoted message as data', () => {
 function fakeSpawn({ stdout = '', code = 0, hang = false }) {
   return (bin, args, opts) => {
     const child = new EventEmitter();
+    child.stdin = new PassThrough();
+    child.input = '';
+    child.stdin.on('data', d => { child.input += d; });
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
     child.killed = [];
@@ -267,4 +270,68 @@ test('runClaude reports errors and timeouts instead of throwing', async () => {
   assert.deepEqual(fakeSpawn.last.killed, ['SIGTERM']);
   const missing = await runClaude(cfg, JOB, jobDir, { spawnImpl: () => { throw new Error('ENOENT'); } });
   assert.match(missing.error, /cannot start claude: ENOENT/);
+});
+
+test('a trigger pushed past the first page by a burst of sends is still found', async () => {
+  const burst = Array.from({ length: 45 }, (_, i) => msg({ id: `B${i}`, chat: GROUP, text: `noise ${i}`, ts: TS - 10 + i / 100 }));
+  const { w, jobs } = await makeWatcher([msg({ id: 'TRIG', chat: GROUP, text: '@claude hi', ts: TS - 60 }), ...burst]);
+  await w.poll();
+  await w.drain();
+  assert.deepEqual(jobs.map(j => j.job.id), ['TRIG']);
+});
+
+test('one message that fails to handle does not drop the rest of the batch', async () => {
+  const { w, jobs } = await makeWatcher([
+    msg({ id: 'X1', chat: OWNER, text: 'hello', ts: TS - 3, quotedStanza: '../../etc' }),
+    msg({ id: 'X2', chat: GROUP, text: '@claude hi', ts: TS - 2 }),
+  ]);
+  w.store.getThread = () => { throw new Error('boom'); };
+  await w.poll();
+  await w.drain();
+  assert.deepEqual(jobs.map(j => j.job.id), ['X2']);
+});
+
+test('an approval older than a day is not sent', async () => {
+  const { w, client, store } = await makeWatcher([]);
+  store.addPending('OLD1', { target: { sendTo: '972511111111@s.whatsapp.net', name: 'יוסי' }, text: 'x', createdAt: NOW - 2 * 86400000 });
+  client.messages.push(msg({ id: 'R9', chat: OWNER, text: 'כן', ts: TS - 1, quotedStanza: 'OLD1' }));
+  await w.poll();
+  assert.equal(client.sent.length, 1);
+  assert.equal(client.sent[0].number, OWNER);
+  assert.match(client.sent[0].text, /בת יותר מיום/);
+});
+
+test('a run interrupted by a stop is reported once, not retried', async () => {
+  const { w, client, store } = await makeWatcher([]);
+  const dir = store.jobDir('LOST');
+  fs.writeFileSync(path.join(dir, 'job.json'), JSON.stringify({ id: 'LOST', trigger: { request: 'תסכם' } }));
+  const finished = store.jobDir('FINE');
+  fs.writeFileSync(path.join(finished, 'job.json'), JSON.stringify({ id: 'FINE', trigger: { request: 'x' } }));
+  store.markDone(finished);
+  await w.reportInterrupted();
+  await w.reportInterrupted();
+  assert.equal(client.sent.length, 1);
+  assert.match(client.sent[0].text, /נקטעה.*תסכם/);
+});
+
+test('only one watcher may hold a state directory', () => {
+  const dir = tmpDir();
+  const release = acquireLock(dir);
+  fs.writeFileSync(path.join(dir, 'watcher.pid'), String(process.ppid));
+  assert.throws(() => acquireLock(dir), /already running/);
+  fs.writeFileSync(path.join(dir, 'watcher.pid'), '999999');
+  const again = acquireLock(dir); // a dead pid is a stale lock
+  again();
+  release();
+  assert.equal(fs.existsSync(path.join(dir, 'watcher.pid')), false);
+});
+
+test('the request reaches claude on stdin, not on the command line', async () => {
+  const dir = tmpDir();
+  const jobDir = path.join(dir, 'job');
+  fs.mkdirSync(jobDir);
+  const args = claudeArgs(config(dir), JOB, jobDir);
+  assert.equal(args.join(' ').includes('תסכם'), false);
+  await runClaude(config(dir), JOB, jobDir, { spawnImpl: fakeSpawn({ stdout: JSON.stringify({ result: 'ok' }) }) });
+  assert.match(fakeSpawn.last.input, /תסכם/);
 });

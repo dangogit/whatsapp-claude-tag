@@ -29,6 +29,7 @@ cat > "$PLIST" <<EOF
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>15</integer>
+  <key>ExitTimeOut</key><integer>330</integer>
   <key>StandardOutPath</key><string>$LOGS/out.log</string>
   <key>StandardErrorPath</key><string>$LOGS/err.log</string>
 </dict>

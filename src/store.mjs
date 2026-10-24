@@ -62,8 +62,10 @@ export class AccountStore {
     writeJsonAtomic(path.join(this.dir, 'pending', `${safe(draftId)}.json`), { draftId, ...data });
   }
 
+  // Lookups take ids straight from incoming messages, so an odd id is simply "not ours".
   getPending(draftId) {
-    return readJson(path.join(this.dir, 'pending', `${safe(draftId)}.json`), null);
+    if (!isSafeId(draftId)) return null;
+    return readJson(path.join(this.dir, 'pending', `${draftId}.json`), null);
   }
 
   removePending(draftId) {
@@ -80,7 +82,31 @@ export class AccountStore {
   }
 
   getThread(messageId) {
+    if (!isSafeId(messageId)) return null;
     return readJson(path.join(this.dir, 'threads.json'), {})[messageId] || null;
+  }
+
+  // Runs that wrote job.json but never got a result: the process stopped mid-run.
+  unfinishedJobs(maxAgeMs) {
+    const root = path.join(this.dir, 'jobs');
+    const out = [];
+    for (const name of fs.readdirSync(root)) {
+      const dir = path.join(root, name);
+      const jobFile = path.join(dir, 'job.json');
+      if (!fs.existsSync(jobFile) || fs.existsSync(path.join(dir, 'done')) || fs.existsSync(path.join(dir, 'abandoned'))) continue;
+      if (Date.now() - fs.statSync(jobFile).mtimeMs > maxAgeMs) continue;
+      const job = readJson(jobFile, null);
+      if (job) out.push({ job, dir });
+    }
+    return out;
+  }
+
+  markDone(jobDir) {
+    fs.writeFileSync(path.join(jobDir, 'done'), String(Date.now()), { mode: 0o600 });
+  }
+
+  markAbandoned(jobDir) {
+    fs.writeFileSync(path.join(jobDir, 'abandoned'), String(Date.now()), { mode: 0o600 });
   }
 
   jobDir(jobId) {
@@ -98,10 +124,36 @@ export class AccountStore {
   }
 }
 
+function isSafeId(id) {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(String(id));
+}
+
 function safe(id) {
-  const s = String(id);
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(s)) throw new Error(`unsafe id ${s.slice(0, 40)}`);
-  return s;
+  if (!isSafeId(id)) throw new Error(`unsafe id ${String(id).slice(0, 40)}`);
+  return String(id);
+}
+
+// One running watcher per state directory: two would run every trigger twice.
+export function acquireLock(stateDir) {
+  const file = path.join(stateDir, 'watcher.pid');
+  fs.mkdirSync(stateDir, { recursive: true });
+  try {
+    const pid = Number(fs.readFileSync(file, 'utf8'));
+    if (pid && pid !== process.pid) {
+      try {
+        process.kill(pid, 0);
+        throw new Error(`another watcher (pid ${pid}) is already running on ${stateDir}`);
+      } catch (err) {
+        if (err.code !== 'ESRCH') throw err;
+      }
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  fs.writeFileSync(file, String(process.pid), { mode: 0o600 });
+  return () => {
+    try { if (Number(fs.readFileSync(file, 'utf8')) === process.pid) fs.rmSync(file); } catch { /* gone */ }
+  };
 }
 
 export function appendAction(jobDir, action) {

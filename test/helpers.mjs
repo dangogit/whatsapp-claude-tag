@@ -20,11 +20,11 @@ export class FakeClient {
     this.n = 0;
   }
 
-  async findMessages(_instance, where = {}, limit = 50) {
+  async findMessages(_instance, where = {}, limit = 50, page = 1) {
     let recs = this.messages;
     if (where.key?.fromMe === true) recs = recs.filter(r => r.key.fromMe === true);
     if (where.key?.remoteJid) recs = recs.filter(r => r.key.remoteJid === where.key.remoteJid);
-    return [...recs].sort((a, b) => b.messageTimestamp - a.messageTimestamp).slice(0, limit);
+    return [...recs].sort((a, b) => b.messageTimestamp - a.messageTimestamp).slice((page - 1) * limit, page * limit);
   }
 
   async findContacts() { return this.contacts; }
@@ -32,6 +32,7 @@ export class FakeClient {
   async ownerJid() { return OWNER; }
 
   async sendText(instance, number, text, opts = {}) {
+    if (this.failSendTo === number) throw new Error('send failed');
     this.n += 1;
     const key = { id: `SENT${this.n}`, remoteJid: number, fromMe: true };
     this.sent.push({ instance, number, text, ...opts, key });

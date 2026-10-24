@@ -8,6 +8,8 @@ const STRINGS = {
     approvalFailed: '⚠️ Sending to {target} failed: {error}',
     sentReceipt: '📤 Sent to {target}.',
     draft: '📝 Draft for {target}:\n\n{text}\n\nReply to this message with "yes" to send it or "no" to drop it.',
+    approvalExpired: '⌛ That draft for {target} is over a day old, so it was not sent. Ask again if you still want it.',
+    interrupted: '⚠️ A run was interrupted before it finished and was not retried: "{request}". Check what was sent and ask again if needed.',
     you: 'you',
   },
   he: {
@@ -17,6 +19,8 @@ const STRINGS = {
     approvalFailed: '⚠️ השליחה ל{target} נכשלה: {error}',
     sentReceipt: '📤 נשלח ל{target}.',
     draft: '📝 טיוטה ל{target}:\n\n{text}\n\nתגיב להודעה הזו ב"כן" כדי לשלוח או ב"לא" כדי לבטל.',
+    approvalExpired: '⌛ הטיוטה ל{target} בת יותר מיום, אז היא לא נשלחה. תבקש שוב אם עדיין צריך.',
+    interrupted: '⚠️ ריצה נקטעה לפני שהסתיימה ולא הורצה שוב: "{request}". תבדוק מה נשלח ותבקש שוב אם צריך.',
     you: 'עצמך',
   },
 };

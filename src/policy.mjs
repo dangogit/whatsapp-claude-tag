@@ -14,9 +14,14 @@ const STOPWORDS = new Set([
   'של', 'עם', 'את', 'על', 'אל', 'גם', 'או', 'זה', 'זו', 'הוא', 'היא', 'אני', 'אתה', 'קבוצה', 'קבוצת',
   'היום', 'אתמול', 'מחר', 'עכשיו', 'כאן', 'פה', 'כל', 'הכל', 'סיכום', 'תסכם', 'סכם', 'הודעה', 'הודעות',
   'שיחה', 'שיחות', 'תשלח', 'שלח', 'תעתיק', 'תכתוב', 'תמחק', 'אליי', 'אלי', 'לי', 'בפרטי', 'פרטי',
+  'בבקשה', 'בקשה', 'תודה', 'שעה', 'שעות', 'דקות', 'יום', 'ימים', 'שבוע', 'חודש', 'אחרונות', 'אחרונים',
+  'אחרון', 'אחרונה', 'מה', 'מי', 'איך', 'למה', 'לפני', 'אחרי', 'רק', 'עוד', 'טוב', 'אותו', 'אותה',
+  'אותם', 'תאשר', 'אישור', 'תענה', 'תגיד', 'תכין', 'תבדוק', 'תמצא', 'קצר', 'בקצרה', 'נקודות',
   'the', 'and', 'for', 'with', 'group', 'chat', 'team', 'from', 'today', 'yesterday', 'tomorrow',
   'summary', 'summarize', 'message', 'messages', 'send', 'copy', 'write', 'delete', 'here', 'this',
-  'that', 'all', 'private', 'privately', 'please', 'reply', 'claude',
+  'that', 'all', 'private', 'privately', 'please', 'reply', 'claude', 'hour', 'hours', 'minute',
+  'minutes', 'day', 'days', 'week', 'month', 'last', 'first', 'what', 'who', 'how', 'why', 'before',
+  'after', 'only', 'thanks', 'approve', 'ask', 'tell', 'short', 'points', 'bullet', 'bullets',
 ]);
 
 // Hebrew attaches one or two letters (ו ה ל ב מ ש כ) to the front of a name: "ליוסי", "ולדנה".

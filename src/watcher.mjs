@@ -4,6 +4,7 @@
 // may already belong to another service. A fromMe-filtered findMessages call is a
 // cheap indexed query, so polling every couple of seconds costs little.
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { buildDirectory } from './directory.mjs';
 import { sameUser } from './policy.mjs';
@@ -14,6 +15,9 @@ import { isGroupJid, messageText, quotedId, quotedText, timestampOf, userPart } 
 
 const CATCH_UP_SECONDS = 10 * 60;
 const BATCH = 30;
+const MAX_PAGES = 5;
+const APPROVAL_TTL_MS = 24 * 3600 * 1000;
+const INTERRUPTED_MAX_AGE_MS = 60 * 60 * 1000;
 
 export class AccountWatcher {
   // deps: { cfg, account, client, store, regex, runJob(cfg, job, jobDir), log, now }
@@ -45,19 +49,56 @@ export class AccountWatcher {
     return this.ownerJids.some(o => sameUser(o, key.remoteJid) || sameUser(o, key.remoteJidAlt));
   }
 
-  async poll() {
-    const recs = await this.client.findMessages(this.account.instance, { key: { fromMe: true } }, BATCH);
-    const sent = this.store.sentIds();
+  // Newest own messages, paging back while a page still holds unseen messages inside
+  // the catch-up window, so a burst of sends cannot push a trigger out of view.
+  async fetchFresh(oldest) {
+    const fresh = [];
+    for (let page = 1; page <= MAX_PAGES; page += 1) {
+      const recs = await this.client.findMessages(this.account.instance, { key: { fromMe: true } }, BATCH, page);
+      const unseen = recs.filter(r => r?.key?.id && r.key.fromMe === true && !this.store.hasSeen(r.key.id));
+      fresh.push(...unseen);
+      const last = recs[recs.length - 1];
+      if (recs.length < BATCH || !unseen.length || timestampOf(last) < oldest) break;
+    }
+    return fresh.sort((a, b) => timestampOf(a) - timestampOf(b));
+  }
+
+  poll() {
+    this.polling = this.pollOnce().finally(() => { this.polling = null; });
+    return this.polling;
+  }
+
+  async pollOnce() {
     const oldest = Math.floor(this.now() / 1000) - CATCH_UP_SECONDS;
-    const fresh = recs
-      .filter(r => r?.key?.id && r.key.fromMe === true && !this.store.hasSeen(r.key.id))
-      .sort((a, b) => timestampOf(a) - timestampOf(b));
+    const fresh = await this.fetchFresh(oldest);
     if (!fresh.length) return;
+    const sent = this.store.sentIds();
     // Mark first: a message that crashes its handler must not run again on every poll.
     this.store.markSeen(fresh.map(r => r.key.id));
     for (const rec of fresh) {
       if (sent.has(rec.key.id) || timestampOf(rec) < oldest) continue;
-      await this.handle(rec);
+      try {
+        await this.handle(rec);
+      } catch (err) {
+        this.log('error', { account: this.account.name, event: 'handle-failed', message: rec.key.id, error: err.message });
+      }
+    }
+  }
+
+  // Waits for the poll in flight and every queued run.
+  async drain() {
+    await this.polling;
+    let queue;
+    do { queue = this.queue; await queue; } while (queue !== this.queue);
+  }
+
+  // A run the process never finished (stop, crash, reinstall) is reported, not
+  // retried: it may already have sent something, and a retry could send it twice.
+  async reportInterrupted() {
+    for (const { job, dir } of this.store.unfinishedJobs(INTERRUPTED_MAX_AGE_MS)) {
+      this.store.markAbandoned(dir);
+      await this.notifyOwner(t(this.cfg.language, 'interrupted', { request: job.trigger.request.slice(0, 120) }));
+      this.log('warn', { account: this.account.name, event: 'run-interrupted', job: job.id });
     }
   }
 
@@ -89,6 +130,10 @@ export class AccountWatcher {
     const lang = this.cfg.language;
     const target = pending.target.name;
     this.store.removePending(pending.draftId);
+    if (answer === 'yes' && this.now() - (pending.createdAt || 0) > APPROVAL_TTL_MS) {
+      await this.notifyOwner(t(lang, 'approvalExpired', { target }));
+      return;
+    }
     if (answer === 'no') {
       await this.notifyOwner(t(lang, 'approvalDropped', { target }));
       this.log('info', { account: this.account.name, event: 'approval-dropped', draft: pending.draftId });
@@ -125,6 +170,16 @@ export class AccountWatcher {
     return this.queue;
   }
 
+  // A thread linked mid-run has no session id yet; the run's result file has it.
+  sessionFor(thread) {
+    if (!thread) return '';
+    if (thread.sessionId) return thread.sessionId;
+    try {
+      const out = JSON.parse(fs.readFileSync(path.join(this.store.jobDir(thread.jobId), 'claude.json'), 'utf8'));
+      return typeof out.session_id === 'string' ? out.session_id : '';
+    } catch { return ''; }
+  }
+
   async buildJob(rec, trig, thread = null) {
     const key = rec.key;
     const alt = key.remoteJidAlt || '';
@@ -152,7 +207,7 @@ export class AccountWatcher {
         // Earlier requests in this conversation still name the chats it may use.
         earlier: thread?.requests || '',
       },
-      resumeSessionId: thread?.sessionId || '',
+      resumeSessionId: this.sessionFor(thread),
       replyPrefix: this.cfg.replyPrefix,
       language: this.cfg.language,
       timezone: this.cfg.timezone,
@@ -173,6 +228,7 @@ export class AccountWatcher {
     this.log('info', { ...base, event: 'run-start', requestChars: job.trigger.request.length });
 
     const res = await this.runJob(this.cfg, job, jobDir);
+    this.store.markDone(jobDir);
     const actions = readActions(jobDir);
     const delivered = actions.some(a => a.type === 'send' || a.type === 'approval');
     const replyIds = actions.filter(a => a.type === 'send' && a.id).map(a => a.id);

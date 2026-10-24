@@ -170,3 +170,19 @@ test('config: validates, reads the key from env or an env file, hides the key', 
   assert.throws(() => normalizeConfig({ ...base, language: 'xx' }, { EVOLUTION_API_KEY: 'k' }), /language/);
   assert.throws(() => normalizeConfig({ ...base, pollMs: 10 }, { EVOLUTION_API_KEY: 'k' }), /pollMs/);
 });
+
+test('the owner chat can be written from anywhere but read only from inside it', async () => {
+  const { tools } = setup();
+  await assert.rejects(tools.read_chat({ chat: 'owner' }), /only be read from inside it/);
+  await assert.rejects(tools.read_chat({ chat: OWNER }), /refused/);
+  const inOwner = setup({ chat: { jid: OWNER, alt: '', name: 'owner', isGroup: false, isOwnerChat: true, sendTo: OWNER } });
+  assert.match(await inOwner.tools.read_chat({ chat: 'owner' }), /messages, last 24h/);
+});
+
+test('a failed receipt does not turn a delivered send into an error', async () => {
+  const { client, store, jobDir, tools } = setup({ request: 'תשלח ליוסי' });
+  client.failSendTo = OWNER;
+  assert.match(await tools.send_message({ chat: '972511111111@s.whatsapp.net', text: 'hi' }), /sent to/);
+  assert.deepEqual(readActions(jobDir).map(a => a.type), ['send', 'receipt-failed']);
+  assert.equal(store.getThread('SENT1').jobId, 'T1');
+});
