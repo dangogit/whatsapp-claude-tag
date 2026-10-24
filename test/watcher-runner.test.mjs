@@ -361,3 +361,9 @@ test('the owner LID is learned from history at startup', async () => {
   const { w } = await makeWatcher([msg({ id: 'OLDSELF', chat: OWNER_LID, alt: OWNER, text: 'old note', ts: TS - 86400 })]);
   assert.deepEqual(w.ownerJids, [OWNER, OWNER_LID]);
 });
+
+test('only the owner\'s own messages can teach an owner LID', async () => {
+  const { w } = await makeWatcher([]);
+  w.learnOwnerLid({ fromMe: false, remoteJid: '999@lid', remoteJidAlt: OWNER });
+  assert.deepEqual(w.ownerJids, [OWNER]);
+});
