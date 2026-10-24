@@ -2,6 +2,10 @@
 
 Type `@claude` at the start of a message in any WhatsApp chat on your own phone (a group, a chat with a friend, or your chat with yourself) and Claude Code does what you asked.
 
+![@claude summarizing a group chat, drafting a message for approval, and refusing a request from a stranger](docs/demo.gif)
+
+[Watch it with sound (MP4, 20 s)](docs/demo.mp4)
+
 ```
 @claude summarize what happened in this group today
 @claude summarize today's messages here and send it to me privately, then delete this message
