@@ -102,7 +102,18 @@ export class AccountWatcher {
     }
   }
 
+  // The self-chat typed on the phone is stored under the owner's LID, with the phone
+  // JID only as remoteJidAlt. Learn that LID so it counts as the owner chat everywhere.
+  learnOwnerLid(key) {
+    const lid = key.remoteJid || '';
+    if (lid.endsWith('@lid') && key.remoteJidAlt && sameUser(key.remoteJidAlt, this.ownerChat)
+      && !this.ownerJids.includes(lid)) {
+      this.ownerJids.push(lid);
+    }
+  }
+
   async handle(rec) {
+    this.learnOwnerLid(rec.key);
     const text = messageText(rec);
     const qid = quotedId(rec);
     if (qid && this.isOwnerChat(rec.key)) {

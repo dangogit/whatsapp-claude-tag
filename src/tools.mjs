@@ -12,6 +12,13 @@ const CHAT_ARG = {
   description: '"current" (the chat you were tagged in), "owner" (the owner\'s private chat), or a JID returned by find_chat.',
 };
 
+// "0501234567" and "972501234567" are the same phone; compare the last nine digits.
+function samePhone(a, b) {
+  const da = userPart(a);
+  const db = userPart(b);
+  return /^\d{9,}$/.test(da) && /^\d{9,}$/.test(db) && da.slice(-9) === db.slice(-9);
+}
+
 function formatTime(ts, timezone) {
   return new Date(ts * 1000).toLocaleString('en-GB', {
     timeZone: timezone, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
@@ -47,6 +54,11 @@ export function createTools(deps) {
     let jid = raw;
     if (/^\+?[\d\s-]{7,}$/.test(raw)) jid = `${raw.replace(/\D/g, '')}@s.whatsapp.net`;
     if (!jid.includes('@')) throw new Error(`"${raw}" is not a JID. Call find_chat first.`);
+    // Checked before any name or number matching, so the owner's own name or number
+    // in the request can never unlock reading the owner chat.
+    if (forRead && !job.chat.isOwnerChat && job.ownerJids.some(o => sameUser(o, jid) || samePhone(o, jid))) {
+      throw new Error('refused: the owner\'s private chat can only be read from inside it.');
+    }
     const names = await deps.getNames();
     const chat = { jid, alt: '', name: names.get(jid) || '', sendTo: jid };
     const verdict = chatAllowed(chat, forRead ? readCtx : policyCtx);
