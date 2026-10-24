@@ -10,6 +10,7 @@
   "files": [
     "src",
     "config.example.json",
+    "config.baileys.example.json",
     "deploy"
   ],
   "engines": {
@@ -19,5 +20,9 @@
     "start": "node src/cli.mjs run",
     "check": "node src/cli.mjs check",
     "test": "node --test --test-concurrency=2 test/*.test.mjs"
+  },
+  "optionalDependencies": {
+    "baileys": "7.0.0-rc14",
+    "qrcode-terminal": "0.12.0"
   }
 }

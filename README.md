@@ -9,11 +9,14 @@ Type `@claude` at the start of a message in any WhatsApp chat on your own phone 
 @claude write Yossi that I'm 10 minutes late, ask me before sending
 ```
 
-It runs on your own machine against an [Evolution API](https://github.com/EvolutionAPI/evolution-api) server that already has your number connected, and it uses your own Claude Code login.
+It runs on your own machine and uses your own Claude Code login. It reaches WhatsApp in one of two ways:
+
+- **Evolution**: an [Evolution API](https://github.com/EvolutionAPI/evolution-api) server that already has your number connected. Use this if you run Evolution anyway.
+- **Baileys**: a direct connection through [Baileys](https://github.com/WhiskeySockets/Baileys), linked to your phone with a QR code like WhatsApp Web. Nothing else to run: no Docker, no Postgres, no Redis. See [Without Evolution: Baileys](#without-evolution-baileys).
 
 ## How it works
 
-1. Every two seconds the watcher asks Evolution for the newest messages **you** sent (`fromMe`). It does not use a webhook, so if another service already owns your instance's webhook, both keep working.
+1. Every two seconds the watcher looks up the newest messages **you** sent (`fromMe`). With Evolution it asks the server and does not use a webhook, so if another service already owns your instance's webhook, both keep working. With Baileys it reads its own local message store.
 2. A message that starts with `@claude` (or any name you configure) becomes a run. If you were replying to a message, its text goes along as context.
 3. The run is `claude -p` with a small MCP server attached. That server gives Claude five tools: `find_chat`, `read_chat`, `send_message`, `request_approval` and `delete_trigger_message`.
 4. Claude reads what it needs, then acts. By default it answers in the chat where you tagged it. You can tell it to answer privately, to send to someone else, to delete your `@claude` message, or to ask you before it sends.
@@ -50,11 +53,11 @@ Swipe-reply to anything a run sent and the same Claude session continues, so you
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 20 or newer for Evolution, 22.13 or newer for Baileys
 - [Claude Code](https://docs.claude.com/en/docs/claude-code) installed and authenticated for headless use: `claude setup-token`, then export `CLAUDE_CODE_OAUTH_TOKEN`, or set `ANTHROPIC_API_KEY`
-- An Evolution API v2 server with your WhatsApp number connected, and its API key
+- Either an Evolution API v2 server with your WhatsApp number connected, and its API key, or a phone to scan a QR code for Baileys
 
-No npm dependencies.
+With Evolution there are no npm dependencies. Baileys and `qrcode-terminal` are optional dependencies, loaded only when `transport` is `"baileys"`.
 
 ## Setup
 
@@ -79,6 +82,29 @@ Run it in the foreground:
 node src/cli.mjs run
 ```
 
+## Without Evolution: Baileys
+
+Baileys talks to WhatsApp directly and links as one of your phone's linked devices.
+
+```bash
+git clone https://github.com/dangogit/whatsapp-claude-tag.git
+cd whatsapp-claude-tag
+npm install
+mkdir -p ~/.config/whatsapp-claude-tag
+cp config.baileys.example.json ~/.config/whatsapp-claude-tag/config.json
+node src/cli.mjs pair
+```
+
+`pair` prints a QR code in the terminal. On your phone open WhatsApp, Settings, Linked devices, Link a device, and scan it. The pairing is saved under `baileys.authDir` (one folder per account; keep it private, it is a login). Then `check` and `run` work as above. With more than one account, pair each with `pair --account <name>`. To unpair, remove the device on the phone and delete its folder.
+
+What is different from Evolution:
+
+- **History starts at pairing.** Baileys has no history API, so the watcher keeps its own SQLite store of every message the connection receives or sends. `read_chat` sees only messages that arrived since you paired, and only while the watcher was running. Messages older than `baileys.keepDays` (30) are pruned.
+- **One connection, held by the watcher.** A second connection on the same pairing would make WhatsApp drop the first, so each run's MCP server reaches WhatsApp through the watcher, over a Unix socket in `stateDir` that only your user can open. The tools and the recipient policy are the same as with Evolution. `pair` refuses to start while the watcher is running.
+- **The watcher never pairs on its own.** It will not start without a pairing, and if you unlink the device on the phone it logs `baileys-closed` with state `logged-out` and stops sending. Delete the account's folder under `baileys.authDir` and run `pair` again.
+- **Storage** uses Node's built-in `node:sqlite` rather than an npm package, so there is no native module to build; that is why this transport needs Node 22.13 or newer. Baileys is pinned to `7.0.0-rc14`, the current `latest` release on npm. It is a release candidate, but it is the line that handles WhatsApp's LID addressing, which the owner-chat detection depends on.
+- The connection does not mark you online, so your phone keeps getting notifications.
+
 ### Run as a service (macOS)
 
 Put the environment the service needs in `~/.config/whatsapp-claude-tag/env.sh`, which `deploy/start.sh` sources:
@@ -100,7 +126,10 @@ Logs go to `~/Library/Logs/whatsapp-claude-tag/`. On Linux, run `deploy/start.sh
 
 | Key | Default | Meaning |
 |---|---|---|
-| `accounts` | required | `[{ "name": "personal", "instance": "..." }]`. One entry per connected number. `ownerChat` overrides where "send it to me" goes (default: your own number on that account). |
+| `transport` | `evolution` | `evolution` or `baileys`. |
+| `accounts` | required | `[{ "name": "personal", "instance": "..." }]`. One entry per connected number. With Baileys, `instance` is optional and names the account's pairing folder (default: `name`). `ownerChat` overrides where "send it to me" goes (default: your own number on that account). |
+| `baileys.authDir` | `<stateDir>/baileys` | Where pairings are saved, one folder per account. |
+| `baileys.keepDays` | `30` | Days of messages the local store keeps. |
 | `triggers` | `["claude"]` | Names that trigger a run, written after `@` at the start of the message. Matching ignores case. |
 | `language` | `en` | Language of the few messages the tool writes itself (`en`, `he`). Claude answers in the language of your request. |
 | `timezone` | system | Used for "today" and for message times. |
@@ -116,10 +145,10 @@ Logs go to `~/Library/Logs/whatsapp-claude-tag/`. On Linux, run `deploy/start.sh
 
 ## What it does not do
 
-- It reads history from Evolution's database, so `read_chat` sees only what Evolution stored since the number was connected.
+- It reads history from Evolution's database, or with Baileys from its own store, so `read_chat` sees only what was stored since the number was connected or paired.
 - Text only. Media show up as `[image]`, `[audio]` and so on.
 - A new `@claude` starts a fresh conversation. Only a swipe-reply continues one.
-- Every message from your number counts as yours, including ones another API client sends through the same Evolution instance. Make sure nothing else on that instance sends text that starts with `@claude`.
+- Every message from your number counts as yours, including ones another API client sends through the same Evolution instance or another linked device. Make sure nothing else sends text that starts with `@claude`.
 - If the service stops in the middle of a run, that run is not retried, because it may already have sent something. You get a note in your own chat instead. Only one watcher can run per state directory.
 - Your phone shows its sends as sent by you, and everyone in the chat sees them. Use `replyPrefix` if you want them marked.
 
@@ -133,6 +162,6 @@ Each run leaves its files in `<stateDir>/<account>/jobs/<message-id>/`: `job.jso
 
 ## Notes
 
-This connects to WhatsApp through Evolution API, which uses WhatsApp Web. That is not the official WhatsApp Business Platform. Use it for your own account, not for bulk or customer messaging.
+Both transports connect as WhatsApp Web (Evolution uses Baileys underneath). That is not the official WhatsApp Business Platform. Use it for your own account, not for bulk or customer messaging.
 
 MIT license.
