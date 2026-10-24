@@ -86,6 +86,15 @@ export class AccountStore {
     return readJson(path.join(this.dir, 'threads.json'), {})[messageId] || null;
   }
 
+  // Owner identifiers learned at runtime (the self-chat LID), kept across restarts.
+  ownerJids() {
+    return readJson(path.join(this.dir, 'owner.json'), []);
+  }
+
+  saveOwnerJids(jids) {
+    writeJsonAtomic(path.join(this.dir, 'owner.json'), jids);
+  }
+
   // Runs that wrote job.json but never got a result: the process stopped mid-run.
   unfinishedJobs(maxAgeMs) {
     const root = path.join(this.dir, 'jobs');
