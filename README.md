@@ -160,13 +160,14 @@ The extension only lists and creates calendar events and reads mail headers. It 
 |---|---|
 | `host_projects` | Lists the git repositories under the projects folder |
 | `host_status` | Shows the branch, uncommitted changes and recent commits |
-| `host_ask` | Claude Code answers a question with read-only tools. It cannot read `.env`, key or `.secrets` files |
-| `host_task` | Claude Code makes the change in a new git worktree on a new branch and commits there. It never pushes or merges, so you review the branch |
+| `host_ask` | Claude Code answers a question. It can read files inside that project only, never `.env`, key or `.secrets` files, and gets the recent commits |
+| `host_task` | Claude Code edits files in a new git worktree on a new branch, and the gate commits them with git hooks off. Tests are not run, nothing is pushed or merged, and you review the branch |
 
 It is limited at both ends:
 
 - **On the other machine**, the key you add can run one program: `gate.mjs`, as a forced command with `restrict`. It gets no shell, no port forwarding and no other command. The gate accepts only the four operations above, on git repositories inside the projects root.
-- **On the watcher's side**, a run may only touch a project you named in your own request.
+- **Claude Code on that machine gets no shell.** It can read files, and in a task edit files, only inside the project. Running tests or git commands would mean running code the agent itself can write.
+- **On the watcher's side**, a run may only touch a project whose full name you wrote in your own request: `whatsapp-claude-tag` or `whatsapp claude tag`, not just `whatsapp`.
 
 Setup, on the machine that should accept requests:
 

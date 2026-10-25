@@ -6,9 +6,13 @@
 //
 //   projects                      git repositories under the projects root
 //   status  {project}             branch, short status and the last commits
-//   ask     {project, question}   Claude Code answers about the project, read-only tools
-//   task    {project, instruction} Claude Code works in a NEW worktree on a new branch,
-//                                 may edit and commit there, never pushes or merges
+//   ask     {project, question}   Claude Code answers about the project: it can read files
+//                                 inside the project and nothing else
+//   task    {project, instruction} Claude Code edits files inside a NEW worktree on a new
+//                                 branch; the gate commits the result. Never pushes or merges.
+//
+// Claude Code here gets no shell at all: running a test or a git command would be running code
+// the agent can write. Reads and edits are limited to the project directory by permission rules.
 //
 // The request arrives in SSH_ORIGINAL_COMMAND as "<op> <base64url JSON>".
 // Settings (set in the forced command): WCT_ROOT (projects root, default ~/projects),
@@ -83,6 +87,7 @@ function claude(dir, prompt, { tools, allowed, minutes }) {
     '--tools', tools.join(','), '--allowedTools', allowed.join(','), '--permission-mode', 'dontAsk',
     // secrets stay on disk even though Read is allowed: answers go back into WhatsApp
     '--disallowedTools', 'Read(**/.env*)', 'Read(**/*.pem)', 'Read(**/*.key)', 'Read(**/.secrets*)', 'Read(**/id_*)',
+    'Read(~/**)', 'Edit(.git/**)', 'Edit(**/.git/**)', 'Write(**/.git/**)', 'Edit(.claude/**)', 'Write(.claude/**)',
   ], { cwd: dir, env, input: prompt, encoding: 'utf8', timeout: minutes * 60_000, maxBuffer: 20 * 1024 * 1024 });
   if (r.error) throw new Error(r.error.code === 'ETIMEDOUT' ? `timed out after ${minutes} min` : r.error.message);
   let data;
@@ -91,11 +96,12 @@ function claude(dir, prompt, { tools, allowed, minutes }) {
   return String(data.result || '').trim();
 }
 
-const READ_TOOLS = ['Read', 'Grep', 'Glob', 'Bash'];
-const READ_ALLOWED = ['Read', 'Grep', 'Glob', 'Bash(git status:*)', 'Bash(git log:*)', 'Bash(git diff:*)', 'Bash(git show:*)', 'Bash(git branch:*)', 'Bash(ls:*)'];
-const TASK_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'];
-const TASK_ALLOWED = [...READ_ALLOWED, 'Edit', 'Write', 'Bash(git add:*)', 'Bash(git commit:*)',
-  'Bash(npm test:*)', 'Bash(npm run test:*)', 'Bash(npm run lint:*)', 'Bash(npm run build:*)', 'Bash(node --test:*)'];
+const READ_TOOLS = ['Read', 'Grep', 'Glob'];
+const READ_ALLOWED = ['Read(./**)', 'Grep', 'Glob'];
+const TASK_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write'];
+const TASK_ALLOWED = [...READ_ALLOWED, 'Edit(./**)', 'Write(./**)'];
+// Commits made by the gate run no hooks: the agent could have written one.
+const SAFE_GIT = ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false'];
 
 export function run(req, root) {
   const { op, args } = req;
@@ -107,7 +113,8 @@ export function run(req, root) {
   if (op === 'ask') {
     const q = String(args.question || '').trim();
     if (!q) throw new Error('question required');
-    return claude(dir, `${q}\n\nAnswer briefly, plain text, for a WhatsApp message. You can read files and git history only.`,
+    const context = [`Branch and changes:\n${git(dir, 'status', '-sb')}`, `Recent commits:\n${git(dir, 'log', '-15', '--format=%h %cr  %s')}`].join('\n\n');
+    return claude(dir, `${q}\n\n${context}\n\nAnswer briefly, plain text, for a WhatsApp message. You can read files in this project only.`,
       { tools: READ_TOOLS, allowed: READ_ALLOWED, minutes: 5 });
   }
   if (op === 'task') {
@@ -119,13 +126,19 @@ export function run(req, root) {
     fs.mkdirSync(path.dirname(wt), { recursive: true });
     const base = git(dir, 'rev-parse', '--abbrev-ref', 'HEAD');
     git(dir, 'worktree', 'add', '-q', '-b', branch, wt, 'HEAD');
-    const summary = claude(wt, `${instruction}\n\nWork only in this directory, which is a fresh git worktree on branch ${branch}. `
-      + 'Make the change, run the project\'s tests if they exist and work, and commit on this branch with a clear message. '
-      + 'Never push, merge, switch branches or touch other directories. End with two or three plain lines: what changed and whether tests passed.',
+    const summary = claude(wt, `${instruction}\n\nEdit files in this directory only (a fresh git worktree on branch ${branch}). `
+      + 'You cannot run commands; the change is committed for you after you finish. '
+      + 'End with one plain sentence describing the change, it becomes the commit message.',
     { tools: TASK_TOOLS, allowed: TASK_ALLOWED, minutes: 15 });
+    git(wt, ...SAFE_GIT, 'add', '-A');
+    const changed = git(wt, 'status', '--porcelain');
+    if (changed) {
+      const msg = (summary.split('\n').map(l => l.trim()).filter(Boolean).pop() || instruction).slice(0, 200);
+      git(wt, ...SAFE_GIT, 'commit', '-q', '--no-verify', '-m', `wct: ${msg}`);
+    }
     const log = git(wt, 'log', '--format=%h %s', `${base}..HEAD`) || '(no commits)';
     const stat = git(wt, 'diff', '--stat', `${base}...HEAD`) || '(no changes)';
-    return [`# ${rel}  branch ${branch} (from ${base}), not pushed`, `worktree: ${wt}`, '', summary, '', log, stat].join('\n');
+    return [`# ${rel}  branch ${branch} (from ${base}), not pushed, tests not run`, `worktree: ${wt}`, '', summary, '', log, stat].join('\n');
   }
   throw new Error('unknown request');
 }

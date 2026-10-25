@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { listProjects, parseRequest, resolveProject, run } from '../extensions/ssh-host/gate.mjs';
-import { createHostTools, sshArgs } from '../extensions/ssh-host/host.mjs';
+import { createHostTools, projectNamed, sshArgs } from '../extensions/ssh-host/host.mjs';
 import { readActions } from '../src/store.mjs';
 import { tmpDir } from './helpers.mjs';
 
@@ -64,4 +64,22 @@ test('host: a project must be named by the owner; task is logged', async () => {
   const job2 = { trigger: { request: 'what is the status of whatsapp claude tag' } };
   const t2 = Object.fromEntries(createHostTools({ host: 'h', job: job2, jobDir: dir, exec: async () => 'ok' }).map(t => [t.name, t.handler]));
   assert.equal(await t2.host_status({ project: 'whatsapp-claude-tag' }), 'ok');
+});
+
+test('host: the whole project name must be written, one word of it is not enough', () => {
+  assert.equal(projectNamed('public/whatsapp-claude-tag', 'status of whatsapp claude tag please'), true);
+  assert.equal(projectNamed('whatsapp-claude-tag', 'במק, whatsapp-claude-tag'), true);
+  assert.equal(projectNamed('whatsapp-claude-tag', 'summarize the whatsapp group'), false);
+  assert.equal(projectNamed('club-platform', 'the platform team'), false);
+  assert.equal(projectNamed('luma', 'illuminate'), false);
+  assert.equal(projectNamed('luma', 'fix luma'), true);
+});
+
+test('gate: Claude gets no shell; reads and edits stay inside the project', () => {
+  const src = fs.readFileSync(new URL('../extensions/ssh-host/gate.mjs', import.meta.url), 'utf8');
+  assert.match(src, /const READ_TOOLS = \['Read', 'Grep', 'Glob'\];/);
+  assert.match(src, /const TASK_TOOLS = \['Read', 'Grep', 'Glob', 'Edit', 'Write'\];/);
+  assert.match(src, /'Edit\(\.\/\*\*\)', 'Write\(\.\/\*\*\)'/);
+  assert.match(src, /core\.hooksPath=\/dev\/null/);
+  assert.doesNotMatch(src, /'Bash/);
 });
