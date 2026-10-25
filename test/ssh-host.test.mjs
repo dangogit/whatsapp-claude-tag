@@ -106,3 +106,17 @@ test('gate: task worktrees are excluded from the project\'s git status', async (
   assert.equal(execFileSync('git', ['-C', dir, 'status', '--porcelain'], { encoding: 'utf8' }), '');
   assert.equal(fs.readFileSync(path.join(dir, '.git/info/exclude'), 'utf8').split('\n').filter(l => l === '/.claude/worktrees/').length, 1);
 });
+
+test('gate: git look-alike paths are found in any letter case', async () => {
+  const { gitLookalikes } = await import('../extensions/ssh-host/gate.mjs');
+  const dir = tmpDir();
+  fs.writeFileSync(path.join(dir, '.git'), 'gitdir: /somewhere');
+  fs.mkdirSync(path.join(dir, 'src/.GiT'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'GIT~1'));
+  fs.writeFileSync(path.join(dir, 'src/a.js'), 'x');
+  assert.deepEqual(gitLookalikes(dir).sort(), ['GIT~1', 'src/.GiT']);
+  const clean = tmpDir();
+  fs.writeFileSync(path.join(clean, '.git'), 'gitdir: /x');
+  fs.writeFileSync(path.join(clean, '.gitignore'), 'x');
+  assert.deepEqual(gitLookalikes(clean), []);
+});

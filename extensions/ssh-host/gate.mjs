@@ -118,7 +118,25 @@ const TASK_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write'];
 const TASK_ALLOWED = [...READ_ALLOWED, 'Edit(./**)', 'Write(./**)'];
 // Git after the agent has worked: no hooks, no fsmonitor command, no external diff or textconv.
 const SAFE_GIT = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false',
-  '-c', 'commit.gpgsign=false', '-c', 'diff.external='];
+  '-c', 'commit.gpgsign=false', '-c', 'diff.external=', '-c', 'core.protectHFS=true', '-c', 'core.protectNTFS=true',
+  '-c', 'submodule.recurse=false', '-c', 'status.submoduleSummary=false'];
+
+// Any path segment that git could take for a repository: ".git" in any letter case (macOS
+// and Windows filesystems ignore case) and the 8.3 short name "git~1". Only the worktree's own
+// top-level .git file is expected.
+export function gitLookalikes(root) {
+  const bad = [];
+  const walk = (dir, rel) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      const suspicious = /^\.git$/i.test(e.name) || /^git~\d+$/i.test(e.name);
+      if (suspicious && !(r === '.git' && e.isFile())) bad.push(r);
+      if (e.isDirectory() && !e.isSymbolicLink() && e.name !== 'node_modules' && !suspicious) walk(path.join(dir, e.name), r);
+    }
+  };
+  walk(root, '');
+  return bad;
+}
 
 export function run(req, root) {
   const { op, args } = req;
@@ -156,8 +174,13 @@ export function run(req, root) {
     let dotGitNow = '';
     try { dotGitNow = fs.readFileSync(path.join(wt, '.git'), 'utf8'); } catch { /* removed */ }
     if (dotGitNow !== dotGit) throw new Error(`the worktree's .git file was changed during the task; nothing was committed. Inspect ${wt} by hand.`);
+    const lookalikes = gitLookalikes(wt);
+    if (lookalikes.length) throw new Error(`the task created git-like paths (${lookalikes.slice(0, 3).join(', ')}); nothing was committed. Inspect ${wt} by hand.`);
     wgit('add', '-A');
-    const changed = wgit('status', '--porcelain');
+    if (/^160000 /m.test(wgit('diff', '--cached', '--no-ext-diff', '--raw', '--abbrev=0').replace(/^:\S+ (\S+).*$/gm, '$1 '))) {
+      throw new Error(`the task added a nested repository; nothing was committed. Inspect ${wt} by hand.`);
+    }
+    const changed = wgit('status', '--porcelain', '--ignore-submodules=all');
     if (changed) {
       const msg = (summary.split('\n').map(l => l.trim()).filter(Boolean).pop() || instruction).slice(0, 200);
       wgit('commit', '-q', '--no-verify', '-m', `wct: ${msg}`);
