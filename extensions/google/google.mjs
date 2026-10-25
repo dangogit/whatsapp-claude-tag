@@ -93,11 +93,13 @@ export function createGoogleTools(deps) {
     return data;
   }
 
+  // An address is allowed when the owner wrote it, said "yes" to it, or when find_email
+  // found exactly one person for a lookup and that person's own name is named by the owner.
   function attendeeAllowed(email) {
     const text = authorizedText(job).toLowerCase();
     if ((text.match(EMAIL_RE) || []).includes(email)) return true;
     const hit = readJson(foundFile, {})[email];
-    return Boolean(hit && namedIn(hit.query, authorizedText(job)));
+    return Boolean(hit && hit.unique && hit.name && namedIn(hit.name, authorizedText(job)));
   }
 
   function eventLine(e) {
@@ -179,15 +181,23 @@ export function createGoogleTools(deps) {
       },
       async handler({ name }) {
         const query = String(name || '').trim();
-        if (query.length < 2) throw new Error('name is too short');
-        const list = await api('GET', `${GMAIL}/messages?${new URLSearchParams({ q: query, maxResults: '25' })}`);
+        // A plain name only: no Gmail operators (from:, OR, -, quotes, braces) that could pull in other people.
+        if (!/^[\p{L}][\p{L}'. ]{1,40}$/u.test(query) || /\b(or|and)\b/i.test(query) || query.split(' ').filter(Boolean).length > 3) {
+          throw new Error('name must be a plain person name, up to three words');
+        }
+        const qTokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+        const list = await api('GET', `${GMAIL}/messages?${new URLSearchParams({ q: qTokens.map(tk => `"${tk}"`).join(' '), maxResults: '25' })}`);
         const counts = new Map();
-        const needle = query.toLowerCase();
+        // every word of the query must be a whole word of the display name or of the address' local part
+        const matches = a => {
+          const words = new Set([...a.name.toLowerCase().split(/[^\p{L}\p{N}]+/u), ...a.email.split('@')[0].split(/[._+-]+/)].filter(Boolean));
+          return qTokens.every(tk => words.has(tk));
+        };
         for (const m of (list.messages || []).slice(0, 25)) {
           const msg = await api('GET', `${GMAIL}/messages/${m.id}?${new URLSearchParams([['format', 'metadata'], ['metadataHeaders', 'From'], ['metadataHeaders', 'To'], ['metadataHeaders', 'Cc']])}`);
           for (const h of msg.payload?.headers || []) {
             for (const a of parseAddresses(h.value)) {
-              if (!a.name.toLowerCase().includes(needle) && !a.email.split('@')[0].includes(needle)) continue;
+              if (!matches(a)) continue;
               const c = counts.get(a.email) || { email: a.email, name: a.name, n: 0 };
               c.n += 1; if (!c.name && a.name) c.name = a.name;
               counts.set(a.email, c);
@@ -197,7 +207,7 @@ export function createGoogleTools(deps) {
         const hits = [...counts.values()].sort((a, b) => b.n - a.n).slice(0, 5);
         if (!hits.length) return `No address found for "${query}". Ask the owner for it.`;
         const found = readJson(foundFile, {});
-        for (const h of hits) found[h.email] = { query, name: h.name };
+        for (const h of hits) found[h.email] = { query, name: h.name, unique: hits.length === 1 };
         fs.writeFileSync(foundFile, JSON.stringify(found, null, 2), { mode: 0o600 });
         return hits.map(h => `${h.name || '(no name)'} <${h.email}>  seen ${h.n}x`).join('\n')
           + (hits.length > 1 ? '\nSeveral matches: ask the owner which one before inviting.' : '');

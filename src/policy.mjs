@@ -96,6 +96,8 @@ function wordNames(word, token) {
   const m = HEBREW_PREFIX.exec(word);
   if (!m) return false;
   for (let n = m[0].length; n >= 1; n -= 1) {
+    // a two-letter name takes only one prefix letter ("לבן"), longer names up to two ("ולדנה")
+    if (token.length < 3 && n > 1) continue;
     if (word.length - n >= 2 && word.slice(n) === token) return true;
   }
   return false;
@@ -107,4 +109,13 @@ function wordNames(word, token) {
 export function authorizedText(job) {
   const tr = job.trigger || {};
   return [tr.earlier, tr.approved, tr.request].filter(Boolean).join('\n');
+}
+
+// What a "yes" to a run's question confirms: the email addresses and phone numbers in that
+// question, not its free text (a question can quote chat content the owner never wrote).
+export function confirmedTargets(text) {
+  const s = String(text || '');
+  const emails = s.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || [];
+  const phones = s.match(/\+?\d[\d\s-]{6,}\d/g) || [];
+  return [...emails, ...phones].join('\n');
 }

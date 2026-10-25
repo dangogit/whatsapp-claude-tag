@@ -409,7 +409,7 @@ test('"yes" to a run\'s question adds that question to what the owner authorised
   w.runJob = async (c, job) => { seen.push(job); return { ok: true, result: '' }; };
   await w.poll();
   await w.drain();
-  assert.equal(seen[0].trigger.approved, 'Invite ben@example.com?');
+  assert.equal(seen[0].trigger.approved, 'ben@example.com');
   assert.equal(seen[0].trigger.earlier, 'שלח לבן זימון');
   assert.equal(seen[0].resumeSessionId, 's1');
 });

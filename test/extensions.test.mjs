@@ -127,3 +127,25 @@ test('extensions: validated, passed to claude with the job dir, and allowed', ()
   assert.match(systemPrompt(job), /NOT DONE:/);
   assert.doesNotMatch(systemPrompt(job), /extensions:/);
 });
+
+test('find_email takes plain names only and authorises a single, owner-named person', async () => {
+  const s = setup({ request: 'שלח לבן זימון' });
+  for (const bad of ['בן OR from:evil@x.com', 'from:evil', 'בן -x', '"בן"', 'a b c d']) {
+    await assert.rejects(s.tools.find_email({ name: bad }), /plain person name/);
+  }
+  const messages = {
+    m1: [{ name: 'From', value: 'Ben Cohen <ben.c@example.com>' }],
+    m2: [{ name: 'From', value: 'Ben Levi <benl@example.com>' }],
+    m3: [{ name: 'From', value: 'Benjamin Fox <bfox@example.com>' }],
+  };
+  const two = setup({ request: 'invite Ben to a meeting', messages });
+  const out = await two.tools.find_email({ name: 'Ben' });
+  assert.match(out, /Several matches/);
+  assert.doesNotMatch(out, /bfox/);   // whole words: "Ben" is not "Benjamin"
+  await assert.rejects(two.tools.calendar_create_event({ title: 'x', start: '2026-10-25T17:00', attendees: ['ben.c@example.com'] }), /refused/);
+});
+
+test('a two-letter name takes one prefix letter only', () => {
+  assert.equal(namedIn('בן', 'שלח לבן'), true);
+  assert.equal(namedIn('בן', 'מהבן'), false);
+});

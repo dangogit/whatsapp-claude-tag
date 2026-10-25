@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildDirectory } from './directory.mjs';
-import { authorizedText, sameUser } from './policy.mjs';
+import { confirmedTargets, sameUser } from './policy.mjs';
 import { appendAction, readActions, writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
 import { approvalAnswer, defuseTrigger, parseTrigger } from './trigger.mjs';
@@ -141,7 +141,7 @@ export class AccountWatcher {
     if (thread && text.trim() && (trig || this.isOwnerChat(rec.key))) {
       // "yes" to a message of the run that named a person or an address makes that message
       // part of what the owner authorised: the same check that lets "send it to Dana" through.
-      const approved = approvalAnswer(text) === 'yes' ? quotedText(rec) : '';
+      const approved = approvalAnswer(text) === 'yes' ? confirmedTargets(quotedText(rec)) : '';
       this.enqueue(rec, { name: thread.triggerName || this.cfg.triggers[0], request: trig ? trig.request : text.trim() }, { ...thread, approved });
       return;
     }
@@ -271,7 +271,8 @@ export class AccountWatcher {
       for (const id of replyIds.filter(Boolean)) {
         this.store.linkThread(id, {
           jobId: job.id, sessionId: res.sessionId, triggerName: job.triggerName,
-          requests: authorizedText(job).slice(-4000),
+          // what the owner wrote, not what a "yes" confirmed: a confirmation covers one run
+          requests: [job.trigger.earlier, job.trigger.request].filter(Boolean).join('\n').slice(-4000),
         });
       }
     }
