@@ -109,6 +109,15 @@ What is different from Evolution:
 
 As a service, the Baileys setup uses the same `deploy/install-launchd.sh` or systemd unit as in INSTALL.md; `env.sh` only needs the Claude token.
 
+## Images, voice notes and files
+
+- **Send it media:** an image with the caption `@claude what is this?`, or `@claude` as a reply to a photo, a voice note, a video or a PDF. Claude opens it with `get_media`. It sees images, gets voice notes as a transcript, and gets other files as a saved file.
+- **Talk to it:** a voice note you send to your own chat that starts with "Claude, ..." (or "קלוד ...") is a request, the same as typing it. Other voice notes are ignored.
+- **It sends media back:** `send_file` sends an image, video, audio file or document it made or saved. `send_voice` speaks its answer as a voice note when you ask for audio.
+- **Reading chats:** `read_chat` lists media messages with their id, so Claude can open them.
+
+Voice needs two local tools on the machine that runs the watcher: [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (`whisper-cli` plus a ggml model file) to transcribe, and `ffmpeg`. Speech uses macOS `say`, with Carmit as the Hebrew voice. Set the model path in `config.media.whisperModel`. Without a model, everything else works and voice notes are not transcribed. Media works with the Evolution transport.
+
 ## Extensions: let it really do things
 
 Out of the box a run can read and write WhatsApp and search the web. Anything else, such as a calendar, a CRM or your task list, comes in as an **extension**: an MCP server you add under `claude.mcpServers`. Each run gets the extension's tools, and the extension gets `WCT_JOB_DIR`, so it can see the owner's request and apply the same "only what the owner named" checks.
@@ -210,6 +219,11 @@ The other machine has to be awake and reachable (Tailscale works well for this).
 | `claude.webFetch` | `false` | Also give runs `WebFetch`. See the safety model above. |
 | `claude.fullAccess` | `false` | See the safety model above. |
 | `claude.mcpServers` | `{}` | Extensions: extra MCP servers every run gets. See above. |
+| `claude.systemNote` | `""` | Extra lines for the system prompt, for example what machine it runs on and what is installed there. |
+| `media.whisperModel` | `""` | Path to a whisper.cpp ggml model. Turns on voice note transcription and voice commands. |
+| `media.language` | `auto` | Transcription language (`he`, `en`, `auto`). |
+| `media.voiceHebrew` / `media.voiceOther` | `Carmit` / `""` | macOS `say` voices for spoken replies. |
+| `media.voiceCommands` | `true` | Voice notes to your own chat that start with the assistant's name become requests. |
 | `claude.configDir` | `<stateDir>/claude-home` | `CLAUDE_CONFIG_DIR` for runs. |
 
 ## What it does not do

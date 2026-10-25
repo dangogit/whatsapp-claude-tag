@@ -28,8 +28,10 @@ export function createMcpHandler({ name, version, tools }) {
         const tool = byName.get(msg.params?.name);
         if (!tool) return error(msg.id, -32602, `unknown tool ${msg.params?.name}`);
         try {
-          const text = await tool.handler(msg.params?.arguments || {});
-          return result(msg.id, { content: [{ type: 'text', text: String(text) }] });
+          const out = await tool.handler(msg.params?.arguments || {});
+          // a handler may return MCP content blocks (an image the model should see) instead of text
+          if (out && typeof out === 'object' && Array.isArray(out.content)) return result(msg.id, { content: out.content });
+          return result(msg.id, { content: [{ type: 'text', text: String(out) }] });
         } catch (err) {
           return result(msg.id, { content: [{ type: 'text', text: String(err?.message || err) }], isError: true });
         }

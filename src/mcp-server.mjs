@@ -26,5 +26,7 @@ const getNames = async () => {
   return names;
 };
 
-const tools = createTools({ client, store, job, jobDir, getNames });
+// Files a run may send: its own job folder and the shared working folder Claude runs in.
+const roots = [jobDir, path.join(cfg.stateDir, 'workdir')];
+const tools = createTools({ client, store, job, jobDir, getNames, media: cfg.media, roots });
 serveStdio(createMcpHandler({ name: 'whatsapp', version: '0.1.0', tools }));

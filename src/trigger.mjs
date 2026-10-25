@@ -37,3 +37,13 @@ export function approvalAnswer(text) {
   if (NO.has(t)) return 'no';
   return null;
 }
+
+// A spoken request: the transcript starts with the assistant's name, optionally after "hey".
+// Speech-to-text writes the name in several ways, Hebrew included.
+export function parseVoiceTrigger(text, names = ['claude']) {
+  const spoken = [...new Set([...names.map(n => String(n).replace(/^@/, '').toLowerCase()), 'claude', 'clod', 'cloud', 'klod', 'קלוד', 'קלאוד', 'קלוֹד'])];
+  const alt = spoken.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const m = new RegExp(`^[\\s"'.,!?\u200e\u200f-]*(?:(?:hey|hi|היי|הי)[\\s,]+)?(${alt})(?=$|[\\s,.:;!?-])[\\s,.:;!?-]*([\\s\\S]*)$`, 'iu').exec(String(text || ''));
+  if (!m || !m[2].trim()) return null;
+  return { name: m[1], request: m[2].trim() };
+}

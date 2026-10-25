@@ -66,6 +66,25 @@ export class EvolutionClient {
     return data?.key || {};
   }
 
+  // { base64, mimetype, fileName } of a media message. Evolution fetches it again from WhatsApp.
+  async getMediaBase64(instance, messageId) {
+    return this.request('POST', `/chat/getBase64FromMediaMessage/${enc(instance)}`,
+      { message: { key: { id: messageId } }, convertToMp4: false }, 120_000);
+  }
+
+  // mediatype: image | video | audio | document. Returns the sent message key.
+  async sendMedia(instance, number, { mediatype, mimetype, base64, fileName, caption }) {
+    const body = { number, mediatype, mimetype, media: base64, fileName, ...(caption ? { caption } : {}) };
+    const data = await this.request('POST', `/message/sendMedia/${enc(instance)}`, body, 120_000);
+    return data?.key || {};
+  }
+
+  // A voice note (push-to-talk) from Opus/OGG or any audio Evolution can convert.
+  async sendVoice(instance, number, base64) {
+    const data = await this.request('POST', `/message/sendWhatsAppAudio/${enc(instance)}`, { number, audio: base64 }, 120_000);
+    return data?.key || {};
+  }
+
   async deleteForEveryone(instance, key) {
     const body = { id: key.id, remoteJid: key.remoteJid, fromMe: key.fromMe === true };
     if (key.participant) body.participant = key.participant;
