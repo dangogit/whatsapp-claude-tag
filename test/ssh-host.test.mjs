@@ -92,6 +92,7 @@ test('gate: Claude gets no shell; reads and edits stay inside the project', () =
   assert.match(src, /'Write\(\.git\)'/);
   assert.match(src, /--git-dir=\$\{gitDir\}/);
   assert.match(src, /core\.fsmonitor=false/);
+  assert.match(src, /\.git\(modules\|attributes\)/);
 });
 
 test('gate: task worktrees are excluded from the project\'s git status', async () => {
@@ -114,7 +115,8 @@ test('gate: git look-alike paths are found in any letter case', async () => {
   fs.mkdirSync(path.join(dir, 'src/.GiT'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'GIT~1'));
   fs.writeFileSync(path.join(dir, 'src/a.js'), 'x');
-  assert.deepEqual(gitLookalikes(dir).sort(), ['GIT~1', 'src/.GiT']);
+  fs.mkdirSync(path.join(dir, 'node_modules/pkg/.git'), { recursive: true });
+  assert.deepEqual(gitLookalikes(dir).sort(), ['GIT~1', 'node_modules/pkg/.git', 'src/.GiT']);
   const clean = tmpDir();
   fs.writeFileSync(path.join(clean, '.git'), 'gitdir: /x');
   fs.writeFileSync(path.join(clean, '.gitignore'), 'x');
