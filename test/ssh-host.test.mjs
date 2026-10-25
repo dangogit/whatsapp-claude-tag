@@ -83,5 +83,26 @@ test('gate: Claude gets no shell; reads and edits stay inside the project', () =
   assert.match(src, /core\.hooksPath=\/dev\/null/);
   assert.doesNotMatch(src, /'Bash/);
   // reads outside the project are blocked by the allow rule; a deny on ~ would also hit the project
-  assert.doesNotMatch(src, /'Read\(~/);
+  // no deny on the whole home folder (it would cover the project), only on sensitive folders in it
+  assert.doesNotMatch(src, /'Read\(~\/\*\*\)'/);
+  assert.match(src, /'Read\(~\/\.ssh\/\*\*\)'/);
+  // Grep and Glob are path-scoped like Read; bare entries search the whole disk
+  assert.match(src, /const READ_ALLOWED = \['Read\(\.\/\*\*\)', 'Grep\(\.\/\*\*\)', 'Glob\(\.\/\*\*\)'\];/);
+  // the worktree's .git file is protected and git after the task ignores it
+  assert.match(src, /'Write\(\.git\)'/);
+  assert.match(src, /--git-dir=\$\{gitDir\}/);
+  assert.match(src, /core\.fsmonitor=false/);
+});
+
+test('gate: task worktrees are excluded from the project\'s git status', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { excludeWorktrees } = await import('../extensions/ssh-host/gate.mjs');
+  const dir = tmpDir();
+  execFileSync('git', ['init', '-q', dir]);
+  fs.mkdirSync(path.join(dir, '.claude/worktrees/wct-x'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.claude/worktrees/wct-x/f'), 'x');
+  excludeWorktrees(dir);
+  excludeWorktrees(dir);   // idempotent
+  assert.equal(execFileSync('git', ['-C', dir, 'status', '--porcelain'], { encoding: 'utf8' }), '');
+  assert.equal(fs.readFileSync(path.join(dir, '.git/info/exclude'), 'utf8').split('\n').filter(l => l === '/.claude/worktrees/').length, 1);
 });
