@@ -22,6 +22,11 @@ const STOPWORDS = new Set([
   'that', 'all', 'private', 'privately', 'please', 'reply', 'claude', 'hour', 'hours', 'minute',
   'minutes', 'day', 'days', 'week', 'month', 'last', 'first', 'what', 'who', 'how', 'why', 'before',
   'after', 'only', 'thanks', 'approve', 'ask', 'tell', 'short', 'points', 'bullet', 'bullets',
+  // Two-letter names are real (בן, דן, טל), so short common words have to be listed too.
+  'לו', 'לה', 'לך', 'כן', 'לא', 'אם', 'כי', 'עד', 'יש', 'אין', 'כך', 'אז', 'הם', 'הן', 'בו', 'בה', 'שם',
+  'אך', 'גם', 'רב', 'די', 'זמן', 'ב', 'ל', 'מ', 'ש', 'ו', 'ה',
+  'of', 'to', 'in', 'on', 'at', 'me', 'my', 'it', 'is', 'be', 'by', 'or', 'an', 'as', 'do', 'if',
+  'so', 'up', 'no', 'we', 'us', 'he', 'am', 'ai', 'pm', 'hi', 'ok', 'min', 'mins',
 ]);
 
 // Hebrew attaches one or two letters (ו ה ל ב מ ש כ) to the front of a name: "ליוסי", "ולדנה".
@@ -37,9 +42,16 @@ function normalize(s) {
     .trim();
 }
 
-// Meaningful tokens of a display name: at least three characters, not a stopword.
+// Meaningful tokens of a display name: at least two characters, not a stopword. Matching is
+// whole-word only (see wordNames), so a two-letter name never matches inside a longer word.
 export function nameTokens(name) {
-  return normalize(name).split(' ').filter(t => t.length >= 3 && !STOPWORDS.has(t));
+  return normalize(name).split(' ').filter(t => t.length >= 2 && !/^\d+$/.test(t) && !STOPWORDS.has(t));
+}
+
+// True when a name is named in the text: a whole word, Hebrew prefix allowed, stopwords ignored.
+export function namedIn(name, text) {
+  const words = normalize(text).split(' ').filter(w => w && !STOPWORDS.has(w));
+  return nameTokens(name).some(tk => words.some(w => wordNames(w, tk)));
 }
 
 // Last nine digits of every phone-number-looking run in the text ("050-123 4567", "+972501234567").
@@ -84,7 +96,15 @@ function wordNames(word, token) {
   const m = HEBREW_PREFIX.exec(word);
   if (!m) return false;
   for (let n = m[0].length; n >= 1; n -= 1) {
-    if (word.slice(n) === token) return true;
+    if (word.length - n >= 2 && word.slice(n) === token) return true;
   }
   return false;
+}
+
+// Everything the owner authorised in this conversation: earlier requests in the thread,
+// a message of the run the owner answered "yes" to, and the current request. Chat content
+// the run read is never part of it.
+export function authorizedText(job) {
+  const tr = job.trigger || {};
+  return [tr.earlier, tr.approved, tr.request].filter(Boolean).join('\n');
 }

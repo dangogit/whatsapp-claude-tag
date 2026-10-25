@@ -1,6 +1,6 @@
 // The WhatsApp tools a run gets. Every chat a tool touches goes through policy.chatAllowed.
 
-import { chatAllowed, sameUser } from './policy.mjs';
+import { chatAllowed, sameUser, authorizedText } from './policy.mjs';
 import { searchDirectory, senderName } from './directory.mjs';
 import { appendAction } from './store.mjs';
 import { t } from './strings.mjs';
@@ -33,7 +33,7 @@ export function createTools(deps) {
   const policyCtx = {
     currentChat: [job.chat.jid, job.chat.alt].filter(Boolean),
     ownerChat: job.ownerJids,
-    triggerText: [job.trigger.earlier, job.trigger.request].filter(Boolean).join('\n'),
+    triggerText: authorizedText(job),
   };
 
   // The owner chat holds drafts, receipts and other runs' private answers, so a run
@@ -70,7 +70,7 @@ export function createTools(deps) {
 
   const threadInfo = {
     jobId: job.id, triggerName: job.triggerName,
-    requests: [job.trigger.earlier, job.trigger.request].filter(Boolean).join('\n').slice(-4000),
+    requests: authorizedText(job).slice(-4000),
   };
 
   function isOwnChat(chat) {
