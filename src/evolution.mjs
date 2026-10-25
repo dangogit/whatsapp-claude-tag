@@ -67,9 +67,11 @@ export class EvolutionClient {
   }
 
   // { base64, mimetype, fileName } of a media message. Evolution fetches it again from WhatsApp.
-  async getMediaBase64(instance, messageId) {
+  // key: a message id, or the full key ({ id, remoteJid, fromMe, participant }) to pin the chat.
+  async getMediaBase64(instance, key) {
+    const k = typeof key === 'string' ? { id: key } : key;
     return this.request('POST', `/chat/getBase64FromMediaMessage/${enc(instance)}`,
-      { message: { key: { id: messageId } }, convertToMp4: false }, 120_000);
+      { message: { key: k }, convertToMp4: false }, 120_000);
   }
 
   // mediatype: image | video | audio | document. Returns the sent message key.

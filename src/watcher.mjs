@@ -11,7 +11,7 @@ import { confirmedTargets, sameUser } from './policy.mjs';
 import { appendAction, readActions, writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
 import { approvalAnswer, defuseTrigger, parseTrigger, parseVoiceTrigger } from './trigger.mjs';
-import { mediaKind, quotedMediaKind, saveMedia, transcribe } from './media.mjs';
+import { mediaKind, ownVoiceNote, quotedMediaKind, saveMedia, transcribe } from './media.mjs';
 import { NOT_DONE } from './runner.mjs';
 import { isGroupJid, messageText, quotedId, quotedText, timestampOf, userPart } from './text.mjs';
 
@@ -149,7 +149,7 @@ export class AccountWatcher {
     if (!trig) {
       // A voice note the owner sends to their own chat is a request when it starts with the
       // assistant's name ("Claude, ..."). It is transcribed in the run queue, not in the poll.
-      if (this.cfg.media.voiceCommands && this.cfg.media.whisperModel && mediaKind(rec) === 'audio' && this.isOwnerChat(rec.key)) {
+      if (this.cfg.media.voiceCommands && this.cfg.media.whisperModel && ownVoiceNote(rec) && this.isOwnerChat(rec.key)) {
         this.enqueue(rec, { name: this.cfg.triggers[0], request: '', voice: true });
       }
       return;
@@ -160,7 +160,8 @@ export class AccountWatcher {
   // Transcribe a voice note and decide whether it is addressed to the assistant.
   async voiceRequest(rec) {
     const dir = path.join(this.store.jobDir(rec.key.id), 'media');
-    const got = await saveMedia(this.client, this.account.instance, rec.key.id, dir);
+    const k = rec.key;
+    const got = await saveMedia(this.client, this.account.instance, { id: k.id, remoteJid: k.remoteJid, fromMe: true }, dir);
     const text = await transcribe(got.file, this.cfg.media);
     return parseVoiceTrigger(text, this.cfg.triggers);
   }

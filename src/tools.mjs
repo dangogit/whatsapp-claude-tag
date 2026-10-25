@@ -219,13 +219,20 @@ export function createTools(deps) {
         if (typeof client.getMediaBase64 !== 'function') throw new Error('media needs the Evolution transport');
         const id = String(message_id || job.trigger.mediaId || job.trigger.quotedMediaId || '').trim();
         if (!id) throw new Error('this request has no media; pass a media id from read_chat');
+        let key = id;
         if (id !== job.trigger.mediaId && id !== job.trigger.quotedMediaId) {
-          // a media id from read_chat: its chat must be one this run may read
-          const [rec] = await client.findMessages(instance, { key: { id } }, 1);
-          if (!rec) throw new Error(`no message ${id}`);
-          await resolve(rec.key.remoteJid, { forRead: true });
+          // a media id from read_chat: its chat must be one this run may read, and the
+          // download is pinned to that exact message, not to whatever else shares the id
+          const recs = await client.findMessages(instance, { key: { id } }, 2);
+          if (!recs.length) throw new Error(`no message ${id}`);
+          if (recs.length > 1) throw new Error(`message id ${id} is ambiguous`);
+          await resolve(recs[0].key.remoteJid, { forRead: true });
+          const k = recs[0].key;
+          key = { id: k.id, remoteJid: k.remoteJid, fromMe: k.fromMe === true, ...(k.participant ? { participant: k.participant } : {}) };
+        } else if (id === job.trigger.mediaId) {
+          key = job.trigger.key;
         }
-        const got = await saveMedia(client, instance, id, path.join(jobDir, 'media'));
+        const got = await saveMedia(client, instance, key, path.join(jobDir, 'media'));
         appendAction(jobDir, { type: 'media', kind: got.kind, bytes: got.size });
         if (got.kind === 'image' && got.size <= 5 * 1024 * 1024) {
           return { content: [

@@ -44,9 +44,11 @@ function run(cmd, args, timeoutMs = 120_000) {
 }
 
 // Download a message's media into dir. Returns { file, mimetype, kind, size }.
-export async function saveMedia(client, instance, messageId, dir) {
+// key: a message id or a full message key (preferred: it pins the chat the media comes from).
+export async function saveMedia(client, instance, key, dir) {
+  const messageId = typeof key === 'string' ? key : key?.id;
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(String(messageId))) throw new Error('bad message id');
-  const data = await client.getMediaBase64(instance, messageId);
+  const data = await client.getMediaBase64(instance, key);
   if (!data?.base64) throw new Error('this message has no downloadable media');
   const mimetype = String(data.mimetype || '').split(';')[0];
   const ext = EXT[mimetype] || path.extname(String(data.fileName || '')) || '.bin';
@@ -117,4 +119,13 @@ export function insideRoots(file, roots) {
     try { rr = fs.realpathSync(r); } catch { return false; }
     return real === rr || real.startsWith(rr + path.sep);
   });
+}
+
+// A voice note the owner recorded: push-to-talk and not forwarded. A forwarded or attached
+// audio file was recorded by someone else and must never act as the owner's command.
+export function ownVoiceNote(rec) {
+  const a = rec?.message?.audioMessage;
+  if (!a || a.ptt !== true) return false;
+  const ci = a.contextInfo || rec?.contextInfo || {};
+  return !(ci.isForwarded || Number(ci.forwardingScore) > 0);
 }

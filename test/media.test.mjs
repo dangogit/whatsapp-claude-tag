@@ -37,7 +37,7 @@ test('files can be sent only from inside the allowed folders, links resolved', (
 });
 
 class MediaClient extends FakeClient {
-  async getMediaBase64(_i, id) { return id === 'IMG' ? { base64: PNG.toString('base64'), mimetype: 'image/png' } : { base64: Buffer.from('%PDF').toString('base64'), mimetype: 'application/pdf', fileName: 'a.pdf' }; }
+  async getMediaBase64(_i, key) { const id = typeof key === 'string' ? key : key.id; return id === 'IMG' ? { base64: PNG.toString('base64'), mimetype: 'image/png' } : { base64: Buffer.from('%PDF').toString('base64'), mimetype: 'application/pdf', fileName: 'a.pdf' }; }
   async sendMedia(instance, number, m) { this.n += 1; const key = { id: `M${this.n}` }; this.sent.push({ number, media: m, key }); return key; }
   async sendVoice(instance, number, b64) { this.n += 1; const key = { id: `V${this.n}` }; this.sent.push({ number, voice: b64.length, key }); return key; }
 }
@@ -107,4 +107,19 @@ test('synthesize makes an Opus voice note with the system voice', { skip: !hasSa
   assert.ok(fs.statSync(ogg).size > 1000);
   assert.match(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', ogg], { encoding: 'utf8' }), /opus/);
   await assert.rejects(synthesize('', dir, {}), /empty/);
+});
+
+test('only a push-to-talk note the owner recorded counts as a voice command', async () => {
+  const { ownVoiceNote } = await import('../src/media.mjs');
+  assert.equal(ownVoiceNote({ message: { audioMessage: { ptt: true } } }), true);
+  assert.equal(ownVoiceNote({ message: { audioMessage: { ptt: false } } }), false);   // an attached audio file
+  assert.equal(ownVoiceNote({ message: { audioMessage: { ptt: true, contextInfo: { isForwarded: true } } } }), false);
+  assert.equal(ownVoiceNote({ message: { audioMessage: { ptt: true }, }, contextInfo: { forwardingScore: 2 } }), false);
+});
+
+test('get_media by id refuses an id two messages share', async () => {
+  const { tools, client } = setup();
+  client.messages.push({ key: { id: 'DUP', remoteJid: '120363000000000001@g.us' }, messageTimestamp: 2, message: { imageMessage: {} } },
+    { key: { id: 'DUP', remoteJid: '972588888888@s.whatsapp.net' }, messageTimestamp: 3, message: { imageMessage: {} } });
+  await assert.rejects(tools.get_media.handler({ message_id: 'DUP' }), /ambiguous/);
 });
