@@ -82,4 +82,6 @@ test('gate: Claude gets no shell; reads and edits stay inside the project', () =
   assert.match(src, /'Edit\(\.\/\*\*\)', 'Write\(\.\/\*\*\)'/);
   assert.match(src, /core\.hooksPath=\/dev\/null/);
   assert.doesNotMatch(src, /'Bash/);
+  // reads outside the project are blocked by the allow rule; a deny on ~ would also hit the project
+  assert.doesNotMatch(src, /'Read\(~/);
 });
