@@ -94,12 +94,15 @@ export function createGoogleTools(deps) {
   }
 
   // An address is allowed when the owner wrote it, said "yes" to it, or when find_email
-  // found exactly one person for a lookup and that person's own name is named by the owner.
+  // found exactly one person for a lookup whose every word the owner wrote. The display
+  // name in a mail header is chosen by its sender, so it never counts on its own.
   function attendeeAllowed(email) {
-    const text = authorizedText(job).toLowerCase();
-    if ((text.match(EMAIL_RE) || []).includes(email)) return true;
+    const text = authorizedText(job);
+    if ((text.toLowerCase().match(EMAIL_RE) || []).includes(email)) return true;
     const hit = readJson(foundFile, {})[email];
-    return Boolean(hit && hit.unique && hit.name && namedIn(hit.name, authorizedText(job)));
+    if (!hit || !hit.unique) return false;
+    const words = String(hit.query).split(/\s+/).filter(Boolean);
+    return words.length > 0 && words.every(w => namedIn(w, text));
   }
 
   function eventLine(e) {
