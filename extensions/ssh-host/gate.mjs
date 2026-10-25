@@ -87,7 +87,7 @@ function claude(dir, prompt, { tools, allowed, minutes }) {
     '--tools', tools.join(','), '--allowedTools', allowed.join(','), '--permission-mode', 'dontAsk',
     // secrets stay on disk even though Read is allowed: answers go back into WhatsApp
     '--disallowedTools', 'Read(**/.env*)', 'Read(**/*.pem)', 'Read(**/*.key)', 'Read(**/.secrets*)', 'Read(**/id_*)',
-    'Read(~/**)', 'Edit(.git/**)', 'Edit(**/.git/**)', 'Write(**/.git/**)', 'Edit(.claude/**)', 'Write(.claude/**)',
+    'Edit(.git/**)', 'Edit(**/.git/**)', 'Write(**/.git/**)', 'Edit(.claude/**)', 'Write(.claude/**)',
   ], { cwd: dir, env, input: prompt, encoding: 'utf8', timeout: minutes * 60_000, maxBuffer: 20 * 1024 * 1024 });
   if (r.error) throw new Error(r.error.code === 'ETIMEDOUT' ? `timed out after ${minutes} min` : r.error.message);
   let data;
