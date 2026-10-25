@@ -71,6 +71,18 @@ export function resolveProject(root, name) {
   return { rel: hits[0], dir };
 }
 
+// Task worktrees live inside the project; keep them out of the owner's `git status` and
+// out of an accidental `git add -A`, through the repo's local exclude file (never tracked).
+export function excludeWorktrees(dir) {
+  const common = path.resolve(dir, git(dir, 'rev-parse', '--git-common-dir'));
+  const file = path.join(common, 'info', 'exclude');
+  const line = '/.claude/worktrees/';
+  const cur = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  if (cur.split('\n').includes(line)) return;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, `${cur && !cur.endsWith('\n') ? '\n' : ''}${line}\n`);
+}
+
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', timeout: 20_000 }).trim();
 
 function claude(dir, prompt, { tools, allowed, minutes }) {
@@ -87,7 +99,10 @@ function claude(dir, prompt, { tools, allowed, minutes }) {
     '--tools', tools.join(','), '--allowedTools', allowed.join(','), '--permission-mode', 'dontAsk',
     // secrets stay on disk even though Read is allowed: answers go back into WhatsApp
     '--disallowedTools', 'Read(**/.env*)', 'Read(**/*.pem)', 'Read(**/*.key)', 'Read(**/.secrets*)', 'Read(**/id_*)',
-    'Edit(.git/**)', 'Edit(**/.git/**)', 'Write(**/.git/**)', 'Edit(.claude/**)', 'Write(.claude/**)',
+    'Read(~/.ssh/**)', 'Read(~/.config/**)', 'Read(~/.aws/**)', 'Read(~/.local/state/**)', 'Read(~/.netrc)',
+    // in a worktree .git is a file pointing at the git dir: it must not be rewritten either
+    'Edit(.git)', 'Write(.git)', 'Edit(.git/**)', 'Write(.git/**)', 'Edit(**/.git)', 'Write(**/.git)',
+    'Edit(**/.git/**)', 'Write(**/.git/**)', 'Edit(.claude/**)', 'Write(.claude/**)',
   ], { cwd: dir, env, input: prompt, encoding: 'utf8', timeout: minutes * 60_000, maxBuffer: 20 * 1024 * 1024 });
   if (r.error) throw new Error(r.error.code === 'ETIMEDOUT' ? `timed out after ${minutes} min` : r.error.message);
   let data;
@@ -97,11 +112,13 @@ function claude(dir, prompt, { tools, allowed, minutes }) {
 }
 
 const READ_TOOLS = ['Read', 'Grep', 'Glob'];
-const READ_ALLOWED = ['Read(./**)', 'Grep', 'Glob'];
+// Grep and Glob need their own path scope: bare entries let them search the whole disk.
+const READ_ALLOWED = ['Read(./**)', 'Grep(./**)', 'Glob(./**)'];
 const TASK_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write'];
 const TASK_ALLOWED = [...READ_ALLOWED, 'Edit(./**)', 'Write(./**)'];
-// Commits made by the gate run no hooks: the agent could have written one.
-const SAFE_GIT = ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false'];
+// Git after the agent has worked: no hooks, no fsmonitor command, no external diff or textconv.
+const SAFE_GIT = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false',
+  '-c', 'commit.gpgsign=false', '-c', 'diff.external='];
 
 export function run(req, root) {
   const { op, args } = req;
@@ -125,19 +142,28 @@ export function run(req, root) {
     const wt = path.join(dir, '.claude', 'worktrees', `wct-${stamp}`);
     fs.mkdirSync(path.dirname(wt), { recursive: true });
     const base = git(dir, 'rev-parse', '--abbrev-ref', 'HEAD');
+    excludeWorktrees(dir);
     git(dir, 'worktree', 'add', '-q', '-b', branch, wt, 'HEAD');
+    // Pin the worktree's git dir now. Afterwards git runs with --git-dir/--work-tree, so a
+    // rewritten .git file in the worktree cannot point git at a config the agent wrote.
+    const gitDir = git(wt, 'rev-parse', '--absolute-git-dir');
+    const dotGit = fs.readFileSync(path.join(wt, '.git'), 'utf8');
+    const wgit = (...args) => git(dir, ...SAFE_GIT, `--git-dir=${gitDir}`, `--work-tree=${wt}`, ...args);
     const summary = claude(wt, `${instruction}\n\nEdit files in this directory only (a fresh git worktree on branch ${branch}). `
       + 'You cannot run commands; the change is committed for you after you finish. '
       + 'End with one plain sentence describing the change, it becomes the commit message.',
     { tools: TASK_TOOLS, allowed: TASK_ALLOWED, minutes: 15 });
-    git(wt, ...SAFE_GIT, 'add', '-A');
-    const changed = git(wt, 'status', '--porcelain');
+    let dotGitNow = '';
+    try { dotGitNow = fs.readFileSync(path.join(wt, '.git'), 'utf8'); } catch { /* removed */ }
+    if (dotGitNow !== dotGit) throw new Error(`the worktree's .git file was changed during the task; nothing was committed. Inspect ${wt} by hand.`);
+    wgit('add', '-A');
+    const changed = wgit('status', '--porcelain');
     if (changed) {
       const msg = (summary.split('\n').map(l => l.trim()).filter(Boolean).pop() || instruction).slice(0, 200);
-      git(wt, ...SAFE_GIT, 'commit', '-q', '--no-verify', '-m', `wct: ${msg}`);
+      wgit('commit', '-q', '--no-verify', '-m', `wct: ${msg}`);
     }
-    const log = git(wt, 'log', '--format=%h %s', `${base}..HEAD`) || '(no commits)';
-    const stat = git(wt, 'diff', '--stat', `${base}...HEAD`) || '(no changes)';
+    const log = wgit('log', '--no-ext-diff', '--format=%h %s', `${base}..HEAD`) || '(no commits)';
+    const stat = wgit('diff', '--no-ext-diff', '--no-textconv', '--stat', `${base}...HEAD`) || '(no changes)';
     return [`# ${rel}  branch ${branch} (from ${base}), not pushed, tests not run`, `worktree: ${wt}`, '', summary, '', log, stat].join('\n');
   }
   throw new Error('unknown request');
