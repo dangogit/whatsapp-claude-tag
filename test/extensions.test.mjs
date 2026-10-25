@@ -81,7 +81,7 @@ test('attendees: refused unless the owner wrote, confirmed or named them', async
   assert.match(await s3.tools.calendar_create_event({ title: 'x', start: '2026-10-25T17:00', attendees: ['ben@example.com'] }), /invitations sent/);
 });
 
-test('find_email: an address found for a name the owner wrote can be invited', async () => {
+test('find_email finds sent-to addresses, but only the owner\'s confirmation authorises an invite', async () => {
   const messages = {
     m1: [{ name: 'To', value: 'בן כהן <ben@example.com>' }],
     m2: [{ name: 'Cc', value: 'בן כהן <ben@example.com>, other@x.com' }],
@@ -90,13 +90,12 @@ test('find_email: an address found for a name the owner wrote can be invited', a
   const s = setup({ request: 'שלח לבן זימון לפגישה היום ב17 ל10 דקות', messages });
   const out = await s.tools.find_email({ name: 'בן' });
   assert.match(out, /בן כהן <ben@example.com>  seen 2x/);
+  assert.match(out, /confirm the address/);
   assert.doesNotMatch(out, /stranger/);
   assert.match(new URL(s.calls.find(c => c.url.includes('/messages?')).url).searchParams.get('q'), /^in:sent /);
-  assert.match(await s.tools.calendar_create_event({ title: 'פגישה', start: '2026-10-25T17:00', attendees: ['ben@example.com'] }), /invitations sent/);
-  // A name the owner did not write does not unlock what it finds.
-  const s2 = setup({ request: 'שלח לבן זימון', messages: { m1: [{ name: 'From', value: 'Mallory <m@evil.com>' }] } });
-  await s2.tools.find_email({ name: 'Mallory' });
-  await assert.rejects(s2.tools.calendar_create_event({ title: 'x', start: '2026-10-25T17:00', attendees: ['m@evil.com'] }), /refused/);
+  await assert.rejects(s.tools.calendar_create_event({ title: 'פגישה', start: '2026-10-25T17:00', attendees: ['ben@example.com'] }), /Invite ben@example.com\?/);
+  const ok = setup({ request: 'כן', earlier: 'שלח לבן זימון', approved: 'ben@example.com', messages });
+  assert.match(await ok.tools.calendar_create_event({ title: 'פגישה', start: '2026-10-25T17:00', attendees: ['ben@example.com'] }), /invitations sent/);
 });
 
 test('calendar_list_events prints local times and attendees', async () => {
@@ -131,35 +130,22 @@ test('extensions: validated, passed to claude with the job dir, and allowed', ()
   assert.doesNotMatch(systemPrompt(job), /extensions:/);
 });
 
-test('find_email takes plain names only and authorises a single, owner-named person', async () => {
+test('find_email takes plain names only and matches whole words', async () => {
   const s = setup({ request: 'שלח לבן זימון' });
   for (const bad of ['בן OR from:evil@x.com', 'from:evil', 'בן -x', '"בן"', 'a b c d']) {
     await assert.rejects(s.tools.find_email({ name: bad }), /plain person name/);
   }
   const messages = {
     m1: [{ name: 'To', value: 'Ben Cohen <ben.c@example.com>' }],
-    m2: [{ name: 'To', value: 'Ben Levi <benl@example.com>' }],
     m3: [{ name: 'To', value: 'Benjamin Fox <bfox@example.com>' }],
   };
   const two = setup({ request: 'invite Ben to a meeting', messages });
   const out = await two.tools.find_email({ name: 'Ben' });
-  assert.match(out, /Several matches/);
+  assert.match(out, /ben.c@example.com/);
   assert.doesNotMatch(out, /bfox/);   // whole words: "Ben" is not "Benjamin"
-  await assert.rejects(two.tools.calendar_create_event({ title: 'x', start: '2026-10-25T17:00', attendees: ['ben.c@example.com'] }), /refused/);
 });
 
 test('a two-letter name takes one prefix letter only', () => {
   assert.equal(namedIn('בן', 'שלח לבן'), true);
   assert.equal(namedIn('בן', 'מהבן'), false);
-});
-
-test('a sender cannot borrow a name the owner wrote through their display name', async () => {
-  const messages = { m1: [{ name: 'To', value: 'בן Mallory <m@evil.com>' }] };
-  const s = setup({ request: 'שלח לבן זימון', messages });
-  await s.tools.find_email({ name: 'Mallory' });
-  await assert.rejects(s.tools.calendar_create_event({ title: 'x', start: '2026-10-25T17:00', attendees: ['m@evil.com'] }), /refused/);
-  // every word of the lookup must be the owner's: "בן Mallory" is not
-  const s2 = setup({ request: 'שלח לבן זימון', messages });
-  await s2.tools.find_email({ name: 'בן Mallory' });
-  await assert.rejects(s2.tools.calendar_create_event({ title: 'x', start: '2026-10-25T17:00', attendees: ['m@evil.com'] }), /refused/);
 });

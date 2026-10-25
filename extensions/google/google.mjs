@@ -6,12 +6,10 @@
 // sends, changes or deletes mail, even if the token's scopes would allow it.
 //
 // Inviting someone is an outward action, so attendees go through the same rule as WhatsApp
-// recipients: an address the owner wrote, an address the owner said "yes" to, or the single
-// address the owner has sent mail to under a name the owner wrote.
+// recipients: only an address the owner wrote, or one the owner said "yes" to.
 
 import fs from 'node:fs';
-import path from 'node:path';
-import { authorizedText, namedIn } from '../../src/policy.mjs';
+import { authorizedText } from '../../src/policy.mjs';
 import { appendAction } from '../../src/store.mjs';
 
 const CAL = 'https://www.googleapis.com/calendar/v3';
@@ -52,9 +50,6 @@ export function parseAddresses(header) {
   return out;
 }
 
-function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
-}
 
 // deps: { tokenFile, calendarId, job, jobDir, fetchImpl, now }
 export function createGoogleTools(deps) {
@@ -63,7 +58,6 @@ export function createGoogleTools(deps) {
   const now = deps.now || Date.now;
   const calendarId = deps.calendarId || 'primary';
   const tz = job.timezone || 'UTC';
-  const foundFile = path.join(jobDir, 'emails.json');
   let access = null;
 
   async function token() {
@@ -93,16 +87,11 @@ export function createGoogleTools(deps) {
     return data;
   }
 
-  // An address is allowed when the owner wrote it, said "yes" to it, or when find_email
-  // found exactly one person for a lookup whose every word the owner wrote. The display
-  // name in a mail header is chosen by its sender, so it never counts on its own.
+  // An address is invited only when the owner wrote it, or said "yes" to a message that
+  // contained it. find_email only discovers candidates: display names are chosen by other
+  // people, so a lookup never authorises an invitation on its own.
   function attendeeAllowed(email) {
-    const text = authorizedText(job);
-    if ((text.toLowerCase().match(EMAIL_RE) || []).includes(email)) return true;
-    const hit = readJson(foundFile, {})[email];
-    if (!hit || !hit.unique) return false;
-    const words = String(hit.query).split(/\s+/).filter(Boolean);
-    return words.length > 0 && words.every(w => namedIn(w, text));
+    return (authorizedText(job).toLowerCase().match(EMAIL_RE) || []).includes(email);
   }
 
   function eventLine(e) {
@@ -132,7 +121,7 @@ export function createGoogleTools(deps) {
     },
     {
       name: 'calendar_create_event',
-      description: `Create an event in the owner's calendar. Times are local (${tz}), like 2026-10-25T17:00. Attendees get an email invitation; only addresses the owner wrote, confirmed, or that find_email returned for a name the owner wrote are accepted.`,
+      description: `Create an event in the owner's calendar. Times are local (${tz}), like 2026-10-25T17:00. Attendees get an email invitation; only addresses the owner wrote or confirmed are accepted. For an address you found, first ask the owner in chat "owner" (for example "Invite ben@example.com?") and create the event after they reply yes.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -155,7 +144,7 @@ export function createGoogleTools(deps) {
         if (bad.length) throw new Error(`not an email address: ${bad.join(', ')}`);
         const refused = emails.filter(e => !attendeeAllowed(e));
         if (refused.length) {
-          throw new Error(`refused: ${refused.join(', ')} - the owner did not write or confirm this address. Ask the owner in chat "owner" to confirm it, then create the event.`);
+          throw new Error(`refused: ${refused.join(', ')} - the owner did not write or confirm this address. Ask the owner in chat "owner" ("Invite ${refused[0]}?") and create the event after they reply yes.`);
         }
         const startMs = localToMs(start, tz);
         const body = {
@@ -176,7 +165,7 @@ export function createGoogleTools(deps) {
     },
     {
       name: 'find_email',
-      description: 'Find email addresses for a person by name, among people the owner has sent mail to. Use the name as the owner wrote it; a single match for that name can be invited.',
+      description: 'Find email addresses for a person by name, among people the owner has sent mail to. The owner must confirm an address before it can be invited.',
       inputSchema: {
         type: 'object',
         properties: { name: { type: 'string' } },
@@ -212,11 +201,8 @@ export function createGoogleTools(deps) {
         }
         const hits = [...counts.values()].sort((a, b) => b.n - a.n).slice(0, 5);
         if (!hits.length) return `No address found for "${query}". Ask the owner for it.`;
-        const found = readJson(foundFile, {});
-        for (const h of hits) found[h.email] = { query, name: h.name, unique: hits.length === 1 };
-        fs.writeFileSync(foundFile, JSON.stringify(found, null, 2), { mode: 0o600 });
         return hits.map(h => `${h.name || '(no name)'} <${h.email}>  seen ${h.n}x`).join('\n')
-          + (hits.length > 1 ? '\nSeveral matches: ask the owner which one before inviting.' : '');
+          + '\nAsk the owner in chat "owner" to confirm the address before inviting it.';
       },
     },
   ];
