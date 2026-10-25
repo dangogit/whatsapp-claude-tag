@@ -152,6 +152,43 @@ gcloud auth application-default login --client-id-file=client_secret.json --scop
 
 The extension only lists and creates calendar events and reads mail headers. It never sends, changes or deletes mail, whatever scopes the token has. Set `GOOGLE_CALENDAR_ID` to use a calendar other than your primary one.
 
+### Another machine over SSH (bundled)
+
+`extensions/ssh-host/` lets runs work with your projects on another computer, for example a laptop, while the watcher runs on a server. `@claude what's the status of whatsapp-claude-tag on my laptop?` or `@claude on my laptop, fix the typo in the luma README` both work.
+
+| Tool | What it does on the other machine |
+|---|---|
+| `host_projects` | Lists the git repositories under the projects folder |
+| `host_status` | Shows the branch, uncommitted changes and recent commits |
+| `host_ask` | Claude Code answers a question with read-only tools. It cannot read `.env`, key or `.secrets` files |
+| `host_task` | Claude Code makes the change in a new git worktree on a new branch and commits there. It never pushes or merges, so you review the branch |
+
+It is limited at both ends:
+
+- **On the other machine**, the key you add can run one program: `gate.mjs`, as a forced command with `restrict`. It gets no shell, no port forwarding and no other command. The gate accepts only the four operations above, on git repositories inside the projects root.
+- **On the watcher's side**, a run may only touch a project you named in your own request.
+
+Setup, on the machine that should accept requests:
+
+```bash
+# on the watcher's machine: a key just for this
+ssh-keygen -t ed25519 -N "" -C whatsapp-claude-tag -f ~/.ssh/id_wct_host
+# on the other machine: install the gate and add the printed line to ~/.ssh/authorized_keys
+TOKEN_CMD='cat ~/.config/wct-gate/claude-token' extensions/ssh-host/install-gate.sh "$(cat id_wct_host.pub)" ~/projects
+```
+
+The gate runs Claude Code on that machine, so it needs a headless token there too. On macOS the Keychain is locked inside SSH sessions, so keep the token in a mode `600` file and read it with `TOKEN_CMD`. Then add the extension to the watcher's config:
+
+```json
+"laptop": {
+  "command": "node",
+  "args": ["~/whatsapp-claude-tag/extensions/ssh-host/server.mjs"],
+  "env": { "SSH_HOST": "me@my-laptop", "SSH_KEY": "~/.ssh/id_wct_host", "HOST_LABEL": "my laptop" }
+}
+```
+
+The other machine has to be awake and reachable (Tailscale works well for this).
+
 ## Configuration
 
 | Key | Default | Meaning |
