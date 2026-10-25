@@ -33,6 +33,18 @@ const DEFAULTS = {
     webFetch: false,
     mcpServers: {},
     configDir: '',
+    systemNote: '',
+  },
+  // Voice notes and speech. whisperModel is a whisper.cpp ggml file; empty = no transcription.
+  media: {
+    whisperCli: 'whisper-cli',
+    whisperModel: '',
+    language: 'auto',
+    ffmpeg: 'ffmpeg',
+    tts: 'say',
+    voiceHebrew: 'Carmit',
+    voiceOther: '',
+    voiceCommands: true,
   },
 };
 
@@ -73,6 +85,7 @@ export function normalizeConfig(raw, env = process.env) {
     ...DEFAULTS,
     ...raw,
     evolution: { ...DEFAULTS.evolution, ...(raw.evolution || {}) },
+    media: { ...DEFAULTS.media, ...(raw.media || {}) },
     baileys: { ...DEFAULTS.baileys, ...(raw.baileys || {}) },
     claude: { ...DEFAULTS.claude, ...(raw.claude || {}) },
   };
@@ -111,6 +124,12 @@ export function normalizeConfig(raw, env = process.env) {
   cfg.claude.fullAccess = cfg.claude.fullAccess === true;
   cfg.claude.webFetch = cfg.claude.webFetch === true;
   cfg.claude.mcpServers = normalizeExtensions(cfg.claude.mcpServers);
+  if (typeof cfg.claude.systemNote !== 'string') throw new Error('config.claude.systemNote must be a string');
+  for (const k of ['whisperCli', 'whisperModel', 'language', 'ffmpeg', 'tts', 'voiceHebrew', 'voiceOther']) {
+    if (typeof cfg.media[k] !== 'string') throw new Error(`config.media.${k} must be a string`);
+    cfg.media[k] = expandHome(cfg.media[k]);
+  }
+  cfg.media.voiceCommands = cfg.media.voiceCommands !== false;
   cfg.stateDir = expandHome(cfg.stateDir);
   cfg.claude.bin = expandHome(cfg.claude.bin);
   cfg.claude.configDir = expandHome(cfg.claude.configDir || path.join(cfg.stateDir, 'claude-home'));

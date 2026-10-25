@@ -10,7 +10,8 @@ import { buildDirectory } from './directory.mjs';
 import { confirmedTargets, sameUser } from './policy.mjs';
 import { appendAction, readActions, writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
-import { approvalAnswer, defuseTrigger, parseTrigger } from './trigger.mjs';
+import { approvalAnswer, defuseTrigger, parseTrigger, parseVoiceTrigger } from './trigger.mjs';
+import { mediaKind, ownVoiceNote, quotedMediaKind, saveMedia, transcribe } from './media.mjs';
 import { NOT_DONE } from './runner.mjs';
 import { isGroupJid, messageText, quotedId, quotedText, timestampOf, userPart } from './text.mjs';
 
@@ -145,8 +146,24 @@ export class AccountWatcher {
       this.enqueue(rec, { name: thread.triggerName || this.cfg.triggers[0], request: trig ? trig.request : text.trim() }, { ...thread, approved });
       return;
     }
-    if (!trig) return;
+    if (!trig) {
+      // A voice note the owner sends to their own chat is a request when it starts with the
+      // assistant's name ("Claude, ..."). It is transcribed in the run queue, not in the poll.
+      if (this.cfg.media.voiceCommands && this.cfg.media.whisperModel && ownVoiceNote(rec) && this.isOwnerChat(rec.key)) {
+        this.enqueue(rec, { name: this.cfg.triggers[0], request: '', voice: true });
+      }
+      return;
+    }
     this.enqueue(rec, trig);
+  }
+
+  // Transcribe a voice note and decide whether it is addressed to the assistant.
+  async voiceRequest(rec) {
+    const dir = path.join(this.store.jobDir(rec.key.id), 'media');
+    const k = rec.key;
+    const got = await saveMedia(this.client, this.account.instance, { id: k.id, remoteJid: k.remoteJid, fromMe: true }, dir);
+    const text = await transcribe(got.file, this.cfg.media);
+    return parseVoiceTrigger(text, this.cfg.triggers);
   }
 
   async resolveApproval(pending, answer) {
@@ -230,6 +247,12 @@ export class AccountWatcher {
         // Earlier requests in this conversation still name the chats it may use.
         earlier: thread?.requests || '',
         approved: thread?.approved || '',
+        // media on the owner's message itself, and on the message it replies to
+        mediaId: mediaKind(rec) ? key.id : '',
+        mediaKind: mediaKind(rec),
+        quotedMediaId: quotedMediaKind(rec) ? quotedId(rec) : '',
+        quotedMediaKind: quotedMediaKind(rec),
+        voice: Boolean(trig.voice),
       },
       resumeSessionId: this.sessionFor(thread),
       replyPrefix: this.cfg.replyPrefix,
@@ -241,6 +264,15 @@ export class AccountWatcher {
   }
 
   async runOne(rec, trig, thread = null) {
+    if (trig.voice) {
+      let heard = null;
+      try { heard = await this.voiceRequest(rec); } catch (err) {
+        this.log('warn', { account: this.account.name, event: 'voice-failed', message: rec.key.id, error: err.message });
+        return;
+      }
+      if (!heard) { this.log('info', { account: this.account.name, event: 'voice-not-addressed', message: rec.key.id }); return; }
+      trig = { ...trig, request: heard.request };
+    }
     const job = await this.buildJob(rec, trig, thread);
     const jobDir = this.store.jobDir(job.id);
     writeJsonAtomic(path.join(jobDir, 'job.json'), job);
