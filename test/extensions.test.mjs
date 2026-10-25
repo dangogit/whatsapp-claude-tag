@@ -149,3 +149,14 @@ test('a two-letter name takes one prefix letter only', () => {
   assert.equal(namedIn('בן', 'שלח לבן'), true);
   assert.equal(namedIn('בן', 'מהבן'), false);
 });
+
+test('a sender cannot borrow a name the owner wrote through their display name', async () => {
+  const messages = { m1: [{ name: 'From', value: 'בן Mallory <m@evil.com>' }] };
+  const s = setup({ request: 'שלח לבן זימון', messages });
+  await s.tools.find_email({ name: 'Mallory' });
+  await assert.rejects(s.tools.calendar_create_event({ title: 'x', start: '2026-10-25T17:00', attendees: ['m@evil.com'] }), /refused/);
+  // every word of the lookup must be the owner's: "בן Mallory" is not
+  const s2 = setup({ request: 'שלח לבן זימון', messages });
+  await s2.tools.find_email({ name: 'בן Mallory' });
+  await assert.rejects(s2.tools.calendar_create_event({ title: 'x', start: '2026-10-25T17:00', attendees: ['m@evil.com'] }), /refused/);
+});
