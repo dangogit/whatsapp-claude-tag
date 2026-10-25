@@ -135,9 +135,9 @@ If a run cannot do part of what you asked, its final line starts with `NOT DONE:
 
 - `calendar_list_events`: what is on your calendar in a time range
 - `calendar_create_event`: an event on your calendar, optionally with invitees and a Meet link
-- `find_email`: the email address of a person by name, from the headers of your recent mail
+- `find_email`: the email address of a person by name, among the people you have sent mail to
 
-So `@claude set a meeting with Ben today at 17:00 for 10 minutes` creates the event. If Ben's address is not in your request, Claude looks it up with `find_email`. It invites him only when the name it searched for is a name you wrote. Otherwise it asks you to confirm the address, and a "yes" swipe-reply finishes the job. Invitations go out by email from Google, because adding a person to an event is an outward action, gated like a WhatsApp recipient.
+So `@claude set a meeting with Ben today at 17:00 for 10 minutes` creates the event. If Ben's address is not in your request, Claude looks it up with `find_email`. It invites him only when the name it searched for is a name you wrote and it matches exactly one address you have sent mail to. Otherwise it asks you to confirm the address, and a "yes" swipe-reply finishes the job. Invitations go out by email from Google, because adding a person to an event is an outward action, gated like a WhatsApp recipient.
 
 The token file is an OAuth "authorized user" JSON (`client_id`, `client_secret`, `refresh_token`) with the `calendar` scope, plus `gmail.readonly` for `find_email`. One way to make one:
 

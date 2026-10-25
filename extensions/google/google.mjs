@@ -6,8 +6,8 @@
 // sends, changes or deletes mail, even if the token's scopes would allow it.
 //
 // Inviting someone is an outward action, so attendees go through the same rule as WhatsApp
-// recipients: an address the owner wrote, an address the owner said "yes" to, or one that
-// find_email returned for a name the owner wrote.
+// recipients: an address the owner wrote, an address the owner said "yes" to, or the single
+// address the owner has sent mail to under a name the owner wrote.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -176,7 +176,7 @@ export function createGoogleTools(deps) {
     },
     {
       name: 'find_email',
-      description: 'Find email addresses for a person by name, from the headers of the owner\'s recent mail. Use the name as the owner wrote it; addresses found for that name can be invited.',
+      description: 'Find email addresses for a person by name, among people the owner has sent mail to. Use the name as the owner wrote it; a single match for that name can be invited.',
       inputSchema: {
         type: 'object',
         properties: { name: { type: 'string' } },
@@ -189,16 +189,19 @@ export function createGoogleTools(deps) {
           throw new Error('name must be a plain person name, up to three words');
         }
         const qTokens = query.toLowerCase().split(/\s+/).filter(Boolean);
-        const list = await api('GET', `${GMAIL}/messages?${new URLSearchParams({ q: qTokens.map(tk => `"${tk}"`).join(' '), maxResults: '25' })}`);
+        // Only mail the owner sent: a stranger can mail the owner under any display name,
+        // but the owner chose every address in their own To and Cc lines.
+        const list = await api('GET', `${GMAIL}/messages?${new URLSearchParams({ q: `in:sent ${qTokens.map(tk => `"${tk}"`).join(' ')}`, maxResults: '50' })}`);
         const counts = new Map();
         // every word of the query must be a whole word of the display name or of the address' local part
         const matches = a => {
           const words = new Set([...a.name.toLowerCase().split(/[^\p{L}\p{N}]+/u), ...a.email.split('@')[0].split(/[._+-]+/)].filter(Boolean));
           return qTokens.every(tk => words.has(tk));
         };
-        for (const m of (list.messages || []).slice(0, 25)) {
-          const msg = await api('GET', `${GMAIL}/messages/${m.id}?${new URLSearchParams([['format', 'metadata'], ['metadataHeaders', 'From'], ['metadataHeaders', 'To'], ['metadataHeaders', 'Cc']])}`);
+        for (const m of (list.messages || []).slice(0, 50)) {
+          const msg = await api('GET', `${GMAIL}/messages/${m.id}?${new URLSearchParams([['format', 'metadata'], ['metadataHeaders', 'To'], ['metadataHeaders', 'Cc']])}`);
           for (const h of msg.payload?.headers || []) {
+            if (!/^(to|cc)$/i.test(h.name)) continue;
             for (const a of parseAddresses(h.value)) {
               if (!matches(a)) continue;
               const c = counts.get(a.email) || { email: a.email, name: a.name, n: 0 };
