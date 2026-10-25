@@ -367,3 +367,49 @@ test('only the owner\'s own messages can teach an owner LID', async () => {
   w.learnOwnerLid({ fromMe: false, remoteJid: '999@lid', remoteJidAlt: OWNER });
   assert.deepEqual(w.ownerJids, [OWNER]);
 });
+
+test('a NOT DONE final line reaches the owner even after a send to someone else', async () => {
+  const DM = '972533333333@s.whatsapp.net';
+  const { w, client } = await makeWatcher(
+    [msg({ id: 'ND', chat: DM, text: '@claude שלח לבן זימון לפגישה', ts: TS - 1 })],
+    async (job, jobDir, c) => {
+      const key = await c.sendText('inst', DM, 'פגישה היום ב-17:00');
+      appendAction(jobDir, { type: 'send', to: DM, id: key.id });
+      return { ok: true, result: 'NOT DONE: no calendar tool, I only sent Ben a message' };
+    },
+  );
+  await w.poll();
+  await w.drain();
+  assert.equal(client.sent.length, 2);
+  assert.equal(client.sent[1].number, OWNER);
+  assert.equal(client.sent[1].text, '⚠️ no calendar tool, I only sent Ben a message');
+});
+
+test('an ordinary final line is not echoed to the owner when the run already sent', async () => {
+  const DM = '972533333333@s.whatsapp.net';
+  const { w, client } = await makeWatcher(
+    [msg({ id: 'OK1', chat: DM, text: '@claude hi', ts: TS - 1 })],
+    async (job, jobDir, c) => {
+      const key = await c.sendText('inst', DM, 'hi');
+      appendAction(jobDir, { type: 'send', to: DM, id: key.id });
+      return { ok: true, result: 'said hi' };
+    },
+  );
+  await w.poll();
+  await w.drain();
+  assert.equal(client.sent.length, 1);
+});
+
+test('"yes" to a run\'s question adds that question to what the owner authorised', async () => {
+  const { w, client, store } = await makeWatcher([]);
+  store.linkThread('BOTQ', { jobId: 'J0', sessionId: 's1', triggerName: 'claude', requests: 'שלח לבן זימון' });
+  client.messages.push({ ...msg({ id: 'Y1', chat: OWNER_LID, alt: OWNER, text: 'כן', ts: TS - 1 }),
+    contextInfo: { stanzaId: 'BOTQ', quotedMessage: { conversation: 'Invite ben@example.com?' } } });
+  const seen = [];
+  w.runJob = async (c, job) => { seen.push(job); return { ok: true, result: '' }; };
+  await w.poll();
+  await w.drain();
+  assert.equal(seen[0].trigger.approved, 'ben@example.com');
+  assert.equal(seen[0].trigger.earlier, 'שלח לבן זימון');
+  assert.equal(seen[0].resumeSessionId, 's1');
+});

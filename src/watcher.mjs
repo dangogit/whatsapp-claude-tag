@@ -7,10 +7,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildDirectory } from './directory.mjs';
-import { sameUser } from './policy.mjs';
+import { confirmedTargets, sameUser } from './policy.mjs';
 import { appendAction, readActions, writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
 import { approvalAnswer, defuseTrigger, parseTrigger } from './trigger.mjs';
+import { NOT_DONE } from './runner.mjs';
 import { isGroupJid, messageText, quotedId, quotedText, timestampOf, userPart } from './text.mjs';
 
 const CATCH_UP_SECONDS = 10 * 60;
@@ -138,7 +139,10 @@ export class AccountWatcher {
     // the owner may simply be quoting the message while talking to people.
     const thread = qid ? this.store.getThread(qid) : null;
     if (thread && text.trim() && (trig || this.isOwnerChat(rec.key))) {
-      this.enqueue(rec, { name: thread.triggerName || this.cfg.triggers[0], request: trig ? trig.request : text.trim() }, thread);
+      // "yes" to a message of the run that named a person or an address makes that message
+      // part of what the owner authorised: the same check that lets "send it to Dana" through.
+      const approved = approvalAnswer(text) === 'yes' ? confirmedTargets(quotedText(rec)) : '';
+      this.enqueue(rec, { name: thread.triggerName || this.cfg.triggers[0], request: trig ? trig.request : text.trim() }, { ...thread, approved });
       return;
     }
     if (!trig) return;
@@ -225,6 +229,7 @@ export class AccountWatcher {
         quoted: thread ? '' : quotedText(rec),
         // Earlier requests in this conversation still name the chats it may use.
         earlier: thread?.requests || '',
+        approved: thread?.approved || '',
       },
       resumeSessionId: this.sessionFor(thread),
       replyPrefix: this.cfg.replyPrefix,
@@ -251,16 +256,22 @@ export class AccountWatcher {
     const actions = readActions(jobDir);
     const delivered = actions.some(a => a.type === 'send' || a.type === 'approval');
     const replyIds = actions.filter(a => a.type === 'send' && a.id).map(a => a.id);
+    // A final line that starts with NOT DONE: reaches the owner even when the run sent
+    // something elsewhere, so "I could only text Ben, not invite him" is never lost in a log.
+    const notDone = res.ok && res.result.toUpperCase().startsWith(NOT_DONE);
+    const toldOwner = actions.some(a => a.type === 'send' && this.ownerJids.some(o => sameUser(o, a.to)));
+    const finalLine = notDone ? `⚠️ ${res.result.slice(NOT_DONE.length).trim()}` : res.result;
     if (!res.ok) {
       await this.notifyOwner(t(this.cfg.language, 'failed', { name: job.triggerName, error: res.error || 'unknown error' }));
-    } else if (!delivered && res.result) {
-      replyIds.push(await this.notifyOwner(res.result));
-      appendAction(jobDir, { type: 'fallback-to-owner' });
+    } else if ((!delivered || (notDone && !toldOwner)) && finalLine) {
+      replyIds.push(await this.notifyOwner(finalLine));
+      appendAction(jobDir, { type: notDone ? 'not-done-to-owner' : 'fallback-to-owner' });
     }
     if (res.ok && res.sessionId) {
       for (const id of replyIds.filter(Boolean)) {
         this.store.linkThread(id, {
           jobId: job.id, sessionId: res.sessionId, triggerName: job.triggerName,
+          // what the owner wrote, not what a "yes" confirmed: a confirmation covers one run
           requests: [job.trigger.earlier, job.trigger.request].filter(Boolean).join('\n').slice(-4000),
         });
       }

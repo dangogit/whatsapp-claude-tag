@@ -43,7 +43,7 @@ Everything the tool sends has a word joiner inserted after a leading `@`, so its
 
 Name matching is a guard, not a guarantee: the stopword list cannot cover every word you might type, and a contact can pick any display name. The receipt is what makes a wrong send visible. For anything sensitive, name the recipient by phone number or ask for approval.
 
-By default Claude gets the WhatsApp tools plus `WebSearch`, and nothing else: no shell, no file access and no `WebFetch`. A run that has read chat history could be steered into fetching a URL that carries that history, so `WebFetch` is opt-in (`claude.webFetch: true`). Setting `claude.fullAccess: true` gives it all of Claude Code's tools with permissions bypassed. Only turn that on if you accept that a crafted message in a chat you summarize could try to steer it.
+By default Claude gets the WhatsApp tools plus `WebSearch`, plus the tools of any extension you add, and nothing else: no shell, no file access and no `WebFetch`. A run that has read chat history could be steered into fetching a URL that carries that history, so `WebFetch` is opt-in (`claude.webFetch: true`). Setting `claude.fullAccess: true` gives it all of Claude Code's tools with permissions bypassed. Only turn that on if you accept that a crafted message in a chat you summarize could try to steer it.
 
 Each run uses its own Claude Code config directory (`claude.configDir`), so your personal hooks, plugins and MCP servers do not load into it.
 
@@ -109,6 +109,49 @@ What is different from Evolution:
 
 As a service, the Baileys setup uses the same `deploy/install-launchd.sh` or systemd unit as in INSTALL.md; `env.sh` only needs the Claude token.
 
+## Extensions: let it really do things
+
+Out of the box a run can read and write WhatsApp and search the web. Anything else, such as a calendar, a CRM or your task list, comes in as an **extension**: an MCP server you add under `claude.mcpServers`. Each run gets the extension's tools, and the extension gets `WCT_JOB_DIR`, so it can see the owner's request and apply the same "only what the owner named" checks.
+
+```json
+"claude": {
+  "mcpServers": {
+    "google": {
+      "command": "node",
+      "args": ["~/whatsapp-claude-tag/extensions/google/server.mjs"],
+      "env": { "GOOGLE_TOKEN_FILE": "~/.config/whatsapp-claude-tag/google-token.json" }
+    }
+  }
+}
+```
+
+The `mcpServers` block is passed to Claude Code on its command line, so put file paths in `env`, never a secret itself.
+
+If a run cannot do part of what you asked, its final line starts with `NOT DONE:` and the watcher always forwards it to your own chat, even when the run already sent something somewhere else.
+
+### Google Calendar (bundled)
+
+`extensions/google/` gives runs three tools:
+
+- `calendar_list_events`: what is on your calendar in a time range
+- `calendar_create_event`: an event on your calendar, optionally with invitees and a Meet link
+- `find_email`: the email address of a person by name, from the headers of your recent mail
+
+So `@claude set a meeting with Ben today at 17:00 for 10 minutes` creates the event. If Ben's address is not in your request, Claude looks it up with `find_email`. It invites him only when the name it searched for is a name you wrote. Otherwise it asks you to confirm the address, and a "yes" swipe-reply finishes the job. Invitations go out by email from Google, because adding a person to an event is an outward action, gated like a WhatsApp recipient.
+
+The token file is an OAuth "authorized user" JSON (`client_id`, `client_secret`, `refresh_token`) with the `calendar` scope, plus `gmail.readonly` for `find_email`. One way to make one:
+
+1. In Google Cloud Console, create an OAuth client of type Desktop app and download its JSON.
+2. Run:
+
+```bash
+gcloud auth application-default login --client-id-file=client_secret.json --scopes=https://www.googleapis.com/auth/calendar,https://www.googleapis.com/auth/gmail.readonly
+```
+
+3. Copy `~/.config/gcloud/application_default_credentials.json` to the `GOOGLE_TOKEN_FILE` path, with mode `600`.
+
+The extension only lists and creates calendar events and reads mail headers. It never sends, changes or deletes mail, whatever scopes the token has. Set `GOOGLE_CALENDAR_ID` to use a calendar other than your primary one.
+
 ## Configuration
 
 | Key | Default | Meaning |
@@ -128,6 +171,7 @@ As a service, the Baileys setup uses the same `deploy/install-launchd.sh` or sys
 | `claude.timeoutMs` | `300000` | A run that takes longer is stopped, and you get a short failure note. |
 | `claude.webFetch` | `false` | Also give runs `WebFetch`. See the safety model above. |
 | `claude.fullAccess` | `false` | See the safety model above. |
+| `claude.mcpServers` | `{}` | Extensions: extra MCP servers every run gets. See above. |
 | `claude.configDir` | `<stateDir>/claude-home` | `CLAUDE_CONFIG_DIR` for runs. |
 
 ## What it does not do

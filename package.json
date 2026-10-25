@@ -11,7 +11,8 @@
     "src",
     "config.example.json",
     "config.baileys.example.json",
-    "deploy"
+    "deploy",
+    "extensions"
   ],
   "engines": {
     "node": ">=20"

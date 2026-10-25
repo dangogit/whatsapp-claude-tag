@@ -31,6 +31,7 @@ const DEFAULTS = {
     timeoutMs: 5 * 60 * 1000,
     fullAccess: false,
     webFetch: false,
+    mcpServers: {},
     configDir: '',
   },
 };
@@ -43,6 +44,25 @@ export function readEnvFile(file) {
     const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
     if (!m) continue;
     out[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+  }
+  return out;
+}
+
+// claude.mcpServers: { name: { command, args?, env? } } extra MCP servers (extensions).
+// Paths may start with ~. Env values are plain settings such as a token FILE path, never a secret:
+// the whole block ends up on the claude command line.
+export function normalizeExtensions(raw) {
+  if (raw == null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('config.claude.mcpServers must be an object of { name: { command, args, env } }');
+  const out = {};
+  for (const [name, srv] of Object.entries(raw)) {
+    if (!/^[a-z0-9_-]{1,32}$/.test(name) || name === 'whatsapp') throw new Error(`invalid extension name "${name}" (lowercase letters, digits, - and _, not "whatsapp")`);
+    if (!srv || typeof srv.command !== 'string' || !srv.command) throw new Error(`extension "${name}" needs a command`);
+    const args = srv.args ?? [];
+    if (!Array.isArray(args) || !args.every(a => typeof a === 'string')) throw new Error(`extension "${name}" args must be a list of strings`);
+    const env = srv.env ?? {};
+    if (typeof env !== 'object' || Array.isArray(env) || !Object.values(env).every(v => typeof v === 'string')) throw new Error(`extension "${name}" env must map names to strings`);
+    out[name] = { command: expandHome(srv.command), args: args.map(expandHome), env: Object.fromEntries(Object.entries(env).map(([k, v]) => [k, expandHome(v)])) };
   }
   return out;
 }
@@ -90,6 +110,7 @@ export function normalizeConfig(raw, env = process.env) {
   if (typeof cfg.replyPrefix !== 'string') throw new Error('config.replyPrefix must be a string');
   cfg.claude.fullAccess = cfg.claude.fullAccess === true;
   cfg.claude.webFetch = cfg.claude.webFetch === true;
+  cfg.claude.mcpServers = normalizeExtensions(cfg.claude.mcpServers);
   cfg.stateDir = expandHome(cfg.stateDir);
   cfg.claude.bin = expandHome(cfg.claude.bin);
   cfg.claude.configDir = expandHome(cfg.claude.configDir || path.join(cfg.stateDir, 'claude-home'));

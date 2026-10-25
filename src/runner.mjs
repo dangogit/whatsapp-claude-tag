@@ -12,8 +12,15 @@ function webTools(cfg) {
   return cfg.claude.webFetch ? ['WebSearch', 'WebFetch'] : ['WebSearch'];
 }
 
-export function systemPrompt(job) {
+// Marks a final line that says part of the request could not be done; the watcher
+// forwards it to the owner even when the run already sent something elsewhere.
+export const NOT_DONE = 'NOT DONE:';
+
+export function systemPrompt(job, extensions = []) {
   const n = job.triggerName;
+  const ext = extensions.length
+    ? `\n9. You also have the tools of these extensions: ${extensions.join(', ')}. Use them to really do what was asked. When asked to schedule or set a meeting, create the calendar event (with the people invited if their email is known); a WhatsApp message alone is not a meeting.`
+    : '';
   return `You are ${n}, an assistant acting for the owner of a WhatsApp account. The owner tagged you by writing "@${n}" in a chat, followed by a request.
 
 Rules:
@@ -24,7 +31,7 @@ Rules:
 5. If find_chat returns several plausible chats, or none, do not guess. Send the owner the candidates in chat "owner" and stop.
 6. Write like a person on WhatsApp: short, plain text, *bold* with single asterisks, simple lists. No markdown headings, tables or links in angle brackets. Use the language of the request unless asked otherwise.
 7. Do exactly what was asked and nothing more. Never message anyone the owner did not ask you to.
-8. Finish with one short line, in the request's language, saying what you did. That line is not sent to the chat; if you sent nothing, it goes to the owner privately.`;
+8. Finish with one short line, in the request's language, saying what you did. That line is not sent to the chat; if you sent nothing, it goes to the owner privately. If any part of the request could not be done with your tools, start that final line with "${NOT_DONE}" and say what is missing: it is then always sent to the owner.${ext}`;
 }
 
 export function userPrompt(job) {
@@ -48,19 +55,26 @@ export function userPrompt(job) {
 }
 
 export function claudeArgs(cfg, job, jobDir) {
+  const runEnv = { WCT_JOB_DIR: jobDir, ...(process.env.WCT_CONFIG ? { WCT_CONFIG: process.env.WCT_CONFIG } : {}) };
+  // Extensions are MCP servers the owner chose to add (a calendar, a CRM). They are trusted
+  // like the owner's own tools, get the job dir so they can apply the same request-based
+  // checks, and must keep secrets in their own files: this JSON is visible in `ps`.
+  const extensions = Object.entries(cfg.claude.mcpServers || {});
   const mcpConfig = {
     mcpServers: {
-      whatsapp: {
-        command: process.execPath,
-        args: [MCP_SERVER],
-        env: { WCT_JOB_DIR: jobDir, ...(process.env.WCT_CONFIG ? { WCT_CONFIG: process.env.WCT_CONFIG } : {}) },
-      },
+      whatsapp: { command: process.execPath, args: [MCP_SERVER], env: runEnv },
+      ...Object.fromEntries(extensions.map(([name, srv]) => [name, {
+        command: srv.command === 'node' ? process.execPath : srv.command,
+        args: srv.args,
+        env: { ...srv.env, ...runEnv },
+      }])),
     },
   };
+  const extTools = extensions.map(([name]) => `mcp__${name}`);
   // The request itself goes in on stdin (see runClaude), so it never shows in `ps`.
   const args = [
     '-p',
-    '--system-prompt', systemPrompt(job),
+    '--system-prompt', systemPrompt(job, extensions.map(([name]) => name)),
     '--output-format', 'json',
     '--model', cfg.claude.model,
     '--strict-mcp-config',
@@ -71,7 +85,7 @@ export function claudeArgs(cfg, job, jobDir) {
     args.push('--permission-mode', 'bypassPermissions');
   } else {
     args.push('--tools', webTools(cfg).join(','));
-    args.push('--allowedTools', ['mcp__whatsapp', ...webTools(cfg)].join(','));
+    args.push('--allowedTools', ['mcp__whatsapp', ...extTools, ...webTools(cfg)].join(','));
     args.push('--permission-mode', 'dontAsk');
   }
   return args;
