@@ -3,8 +3,23 @@
 // is only touched when the owner named it in the request.
 
 import { execFile } from 'node:child_process';
-import { authorizedText, namedIn } from '../../src/policy.mjs';
+import { authorizedText } from '../../src/policy.mjs';
 import { appendAction } from '../../src/store.mjs';
+
+const words = s => String(s || '').toLowerCase().normalize('NFKC').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+
+// The whole last segment of the project must appear in the text, as one token
+// ("whatsapp-claude-tag") or as all its words in order ("whatsapp claude tag").
+// One word of it ("whatsapp") is not enough.
+export function projectNamed(project, text) {
+  const want = words(String(project).split('/').pop());
+  const have = words(text);
+  if (!want.length) return false;
+  for (let i = 0; i + want.length <= have.length; i += 1) {
+    if (want.every((w, k) => have[i + k] === w)) return true;
+  }
+  return false;
+}
 
 // One ssh call: the gate receives "<op> <base64url JSON>" as SSH_ORIGINAL_COMMAND.
 export function sshArgs({ host, key, port }, op, args) {
@@ -39,11 +54,7 @@ export function createHostTools(deps) {
   function checkProject(project) {
     const p = String(project || '').trim();
     if (!p) throw new Error('project is required');
-    const text = authorizedText(job);
-    const last = p.split('/').pop();
-    if (!namedIn(last, text) && !namedIn(last.replace(/[-_.]+/g, ' '), text) && !text.toLowerCase().includes(p.toLowerCase())) {
-      throw new Error(`refused: the owner did not name "${p}" in the request`);
-    }
+    if (!projectNamed(p, authorizedText(job))) throw new Error(`refused: the owner did not name "${p}" in the request`);
     return p;
   }
 
@@ -62,13 +73,13 @@ export function createHostTools(deps) {
     },
     {
       name: 'host_ask',
-      description: `Ask Claude Code on ${label} a question about a project. It can read the code and git history but not change anything. The owner must have named the project.`,
+      description: `Ask Claude Code on ${label} a question about a project. It reads the project's files (and is given its recent commits) and changes nothing. The owner must have named the project.`,
       inputSchema: { type: 'object', properties: { project: { type: 'string' }, question: { type: 'string' } }, required: ['project', 'question'] },
       handler: async ({ project, question }) => call('ask', { project: checkProject(project), question: String(question || '') }, 6),
     },
     {
       name: 'host_task',
-      description: `Have Claude Code on ${label} make a change in a project. It works in a new git worktree on a new branch, commits there, and never pushes or merges; the owner reviews the branch. The owner must have named the project and asked for a change.`,
+      description: `Have Claude Code on ${label} edit files in a project. It works in a new git worktree on a new branch; the change is committed there, tests are not run, nothing is pushed or merged, and the owner reviews the branch. The owner must have named the project and asked for a change.`,
       inputSchema: { type: 'object', properties: { project: { type: 'string' }, instruction: { type: 'string' } }, required: ['project', 'instruction'] },
       async handler({ project, instruction }) {
         const out = await call('task', { project: checkProject(project), instruction: String(instruction || '') }, 16);
