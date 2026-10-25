@@ -83,12 +83,15 @@ test('attendees: refused unless the owner wrote, confirmed or named them', async
 
 test('find_email: an address found for a name the owner wrote can be invited', async () => {
   const messages = {
-    m1: [{ name: 'From', value: 'בן כהן <ben@example.com>' }, { name: 'To', value: 'me@me.com' }],
-    m2: [{ name: 'To', value: 'בן כהן <ben@example.com>, other@x.com' }],
+    m1: [{ name: 'To', value: 'בן כהן <ben@example.com>' }],
+    m2: [{ name: 'Cc', value: 'בן כהן <ben@example.com>, other@x.com' }],
+    m3: [{ name: 'From', value: 'בן <stranger@evil.com>' }],   // inbound only: never counted
   };
   const s = setup({ request: 'שלח לבן זימון לפגישה היום ב17 ל10 דקות', messages });
   const out = await s.tools.find_email({ name: 'בן' });
   assert.match(out, /בן כהן <ben@example.com>  seen 2x/);
+  assert.doesNotMatch(out, /stranger/);
+  assert.match(new URL(s.calls.find(c => c.url.includes('/messages?')).url).searchParams.get('q'), /^in:sent /);
   assert.match(await s.tools.calendar_create_event({ title: 'פגישה', start: '2026-10-25T17:00', attendees: ['ben@example.com'] }), /invitations sent/);
   // A name the owner did not write does not unlock what it finds.
   const s2 = setup({ request: 'שלח לבן זימון', messages: { m1: [{ name: 'From', value: 'Mallory <m@evil.com>' }] } });
@@ -134,9 +137,9 @@ test('find_email takes plain names only and authorises a single, owner-named per
     await assert.rejects(s.tools.find_email({ name: bad }), /plain person name/);
   }
   const messages = {
-    m1: [{ name: 'From', value: 'Ben Cohen <ben.c@example.com>' }],
-    m2: [{ name: 'From', value: 'Ben Levi <benl@example.com>' }],
-    m3: [{ name: 'From', value: 'Benjamin Fox <bfox@example.com>' }],
+    m1: [{ name: 'To', value: 'Ben Cohen <ben.c@example.com>' }],
+    m2: [{ name: 'To', value: 'Ben Levi <benl@example.com>' }],
+    m3: [{ name: 'To', value: 'Benjamin Fox <bfox@example.com>' }],
   };
   const two = setup({ request: 'invite Ben to a meeting', messages });
   const out = await two.tools.find_email({ name: 'Ben' });
@@ -151,7 +154,7 @@ test('a two-letter name takes one prefix letter only', () => {
 });
 
 test('a sender cannot borrow a name the owner wrote through their display name', async () => {
-  const messages = { m1: [{ name: 'From', value: 'בן Mallory <m@evil.com>' }] };
+  const messages = { m1: [{ name: 'To', value: 'בן Mallory <m@evil.com>' }] };
   const s = setup({ request: 'שלח לבן זימון', messages });
   await s.tools.find_email({ name: 'Mallory' });
   await assert.rejects(s.tools.calendar_create_event({ title: 'x', start: '2026-10-25T17:00', attendees: ['m@evil.com'] }), /refused/);
