@@ -131,7 +131,8 @@ export function gitLookalikes(root) {
       const r = rel ? `${rel}/${e.name}` : e.name;
       const suspicious = /^\.git$/i.test(e.name) || /^git~\d+$/i.test(e.name);
       if (suspicious && !(r === '.git' && e.isFile())) bad.push(r);
-      if (e.isDirectory() && !e.isSymbolicLink() && e.name !== 'node_modules' && !suspicious) walk(path.join(dir, e.name), r);
+      // a fresh worktree has no node_modules or other ignored folders: anything here the task made
+      if (e.isDirectory() && !e.isSymbolicLink() && !suspicious) walk(path.join(dir, e.name), r);
     }
   };
   walk(root, '');
@@ -180,6 +181,9 @@ export function run(req, root) {
     if (/^160000 /m.test(wgit('diff', '--cached', '--no-ext-diff', '--raw', '--abbrev=0').replace(/^:\S+ (\S+).*$/gm, '$1 '))) {
       throw new Error(`the task added a nested repository; nothing was committed. Inspect ${wt} by hand.`);
     }
+    const touched = wgit('diff', '--cached', '--name-only', '--no-renames').split('\n');
+    const gitFiles = touched.filter(f => /(^|\/)\.git(modules|attributes)$/i.test(f));
+    if (gitFiles.length) throw new Error(`the task changed ${gitFiles.join(', ')}; nothing was committed. Inspect ${wt} by hand.`);
     const changed = wgit('status', '--porcelain', '--ignore-submodules=all');
     if (changed) {
       const msg = (summary.split('\n').map(l => l.trim()).filter(Boolean).pop() || instruction).slice(0, 200);
