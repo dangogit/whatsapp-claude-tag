@@ -93,6 +93,7 @@ test('gate: Claude gets no shell; reads and edits stay inside the project', () =
   assert.match(src, /--git-dir=\$\{gitDir\}/);
   assert.match(src, /core\.fsmonitor=false/);
   assert.match(src, /\.git\(modules\|attributes\)/);
+  assert.match(src, /'core\.quotePath=false', 'diff', '--cached', '--name-only', '--no-renames', '-z'/);
 });
 
 test('gate: task worktrees are excluded from the project\'s git status', async () => {

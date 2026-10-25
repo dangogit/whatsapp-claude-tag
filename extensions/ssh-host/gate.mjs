@@ -181,8 +181,9 @@ export function run(req, root) {
     if (/^160000 /m.test(wgit('diff', '--cached', '--no-ext-diff', '--raw', '--abbrev=0').replace(/^:\S+ (\S+).*$/gm, '$1 '))) {
       throw new Error(`the task added a nested repository; nothing was committed. Inspect ${wt} by hand.`);
     }
-    const touched = wgit('diff', '--cached', '--name-only', '--no-renames').split('\n');
-    const gitFiles = touched.filter(f => /(^|\/)\.git(modules|attributes)$/i.test(f));
+    // raw NUL-separated names: git would otherwise quote unusual paths ("dir/\327\251/...")
+    const touched = wgit('-c', 'core.quotePath=false', 'diff', '--cached', '--name-only', '--no-renames', '-z').split('\0').filter(Boolean);
+    const gitFiles = touched.filter(f => /^\.git(modules|attributes)$/i.test(f.split('/').pop()));
     if (gitFiles.length) throw new Error(`the task changed ${gitFiles.join(', ')}; nothing was committed. Inspect ${wt} by hand.`);
     const changed = wgit('status', '--porcelain', '--ignore-submodules=all');
     if (changed) {
