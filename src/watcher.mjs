@@ -125,12 +125,11 @@ export class AccountWatcher {
       try { owner = managerUserJid(await this.client.ownerJid(this.account.instance)); } catch { return true; }
       if (owner !== peer.actorId) continue;
       if (peerKeyMatches(key, peer.ownerId)) return true;
-      let aliases;
-      try { aliases = await this.client.peerJids(this.account.instance, peer.ownerId); } catch { return true; }
-      // An unavailable or empty mapping cannot prove that this LID belongs to
-      // another chat. Refuse fallback to Claude until the mapping is resolved.
-      if (!Array.isArray(aliases) || !aliases.length || !aliases.every(j => /^\d+@lid$/.test(j))) return true;
-      if (peerKeyMatches(key, peer.ownerId, aliases)) return true;
+      // Historical aliases cannot prove that a different LID is unrelated to
+      // the business peer. Only a positive provider phone identity can allow
+      // legacy routing on the authorized personal account.
+      this.log('warn', { account: this.account.name, event: 'manager-outgoing-lid-unresolved', message: key.id });
+      return true;
     }
     return false;
   }
