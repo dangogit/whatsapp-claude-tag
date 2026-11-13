@@ -47,6 +47,14 @@ export function peerKeyMatches(key, actorId, aliases = []) {
   return allowed.includes(remote) && (!alt || allowed.includes(alt));
 }
 
+export function authenticatedPeerJids(key, actorId, aliases = []) {
+  if (!peerKeyMatches(key, actorId, aliases)) throw new Error('manager peer key crossed scope');
+  // The same verified provider key proves either PN/LID orientation, even when
+  // a refreshed historical alias query has not indexed that binding yet.
+  return [...new Set([...aliases, managerUserJid(key.remoteJid), managerUserJid(key.remoteJidAlt)]
+    .filter(jid => /^\d+@lid$/.test(jid)))].sort();
+}
+
 export async function readManagerHistory(client, instance, scope, aliases, current, selectedRecords) {
   if (typeof client.findMessagePage !== 'function') throw new Error('complete manager history unavailable');
   const streams = [];

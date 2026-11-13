@@ -46,7 +46,7 @@ export function managerMediaIdentity(rec) {
   const media = managerMediaRecord(rec);
   if (!media) return '';
   const { data } = media;
-  return digest(JSON.stringify([media.kind, media.ownVoice, mime(data.mimetype), data.fileName || '',
+  return digest(JSON.stringify([media.kind, media.voice.ptt, media.voice.forwarded, mime(data.mimetype), data.fileName || '',
     data.fileLength ?? null, data.fileSha256 ?? null, data.fileEncSha256 ?? null, data.seconds ?? null]));
 }
 

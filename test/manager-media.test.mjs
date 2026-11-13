@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { normalizeConfig } from '../src/config.mjs';
 import { EvolutionClient } from '../src/evolution.mjs';
-import { managerAttachmentsValid, managerMediaRecord, prepareManagerAttachment, MANAGER_MEDIA_LIMITS } from '../src/manager-media.mjs';
+import { managerAttachmentsValid, managerMediaIdentity, managerMediaRecord, prepareManagerAttachment, MANAGER_MEDIA_LIMITS } from '../src/manager-media.mjs';
 import { OWNER, tmpDir } from './helpers.mjs';
 
 const scope = { account: { name: 'business', instance: 'biz' }, actorId: OWNER };
@@ -81,6 +81,22 @@ test('forwarding metadata on any wrapper prevents owner voice command status', (
   delete rec.message.audioMessage.contextInfo;
   rec.message = { ephemeralMessage: { contextInfo: { isForwarded: true }, message: rec.message } };
   assert.equal(managerMediaRecord(rec).ownVoice, false);
+});
+
+test('forwarded metadata is immutable for images and documents across preparation retries', async () => {
+  for (const type of ['imageMessage', 'documentMessage']) for (const forwarded of [false, true]) {
+    const cfg = config(), rec = record(type, type === 'imageMessage' ? 'image/png' : 'text/plain',
+      { fileLength: MANAGER_MEDIA_LIMITS.bytes + 1, contextInfo: { isForwarded: forwarded } });
+    const client = provider(Buffer.from('unused'), 'text/plain');
+    const item = await prepareManagerAttachment(cfg, client, scope, rec);
+    assert.equal(item.reason, 'size_limit');
+    const identity = managerMediaIdentity(rec);
+    assert.deepEqual(await prepareManagerAttachment(cfg, client, scope, rec), item);
+    rec.message[type].contextInfo.isForwarded = !forwarded;
+    assert.notEqual(managerMediaIdentity(rec), identity);
+    await assert.rejects(prepareManagerAttachment(cfg, client, scope, rec), /identity conflict/);
+    assert.equal(client.calls.length, 0);
+  }
 });
 
 test('optional envelope is strict, bounded, path-free and rejects command authority on quote/audio failures', async () => {

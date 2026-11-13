@@ -12,7 +12,7 @@ import { appendAction, readActions, writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
 import { approvalAnswer, buildTriggerMatcher, canonicalTriggerName, defuseTrigger, parseVoiceTrigger } from './trigger.mjs';
 import { managerEnvelope, managerTrigger, managerUserJid, managerJobScope, managerScopeConfigured } from './manager.mjs';
-import { managerBody, peerKeyMatches, readManagerHistory, syncManagerHistory } from './manager-history.mjs';
+import { authenticatedPeerJids, managerBody, peerKeyMatches, readManagerHistory, syncManagerHistory } from './manager-history.mjs';
 import { createHash } from 'node:crypto';
 import { ManagerDeliveryStore } from './manager-delivery-store.mjs';
 import { pollManagerDeliveries } from './manager-deliveries.mjs';
@@ -285,8 +285,7 @@ export class AccountWatcher {
       if (!scope || timestampOf(rec) <= Math.floor(Date.parse(scope.enabledSince) / 1000)
         || !peerKeyMatches(rec.key, scope.actorId, this.managerPeerJids) || !await this.managerIdentityMatches(scope)) return;
       if (this.store.sentIds().has(rec.key.id)) return;
-      const peerJids = [...new Set([...this.managerPeerJids, rec.key.remoteJid, rec.key.remoteJidAlt].filter(j => j?.endsWith('@lid')))];
-      this.managerPeerJids = peerJids;
+      this.managerPeerJids = authenticatedPeerJids(rec.key, scope.actorId, this.managerPeerJids);
       const body = managerBody(rec);
       if (body.ignored) return;
       const trig = { backend: 'manager', name: this.cfg.manager.triggers[0], request: body.body, managerScope: structuredClone(scope) };
@@ -562,7 +561,8 @@ export class AccountWatcher {
               for (const source of records) {
                 if (!await this.managerJobAllowed(job)) throw new Error('manager media identity changed');
                 let item = await (this.prepareManagerMedia || prepareManagerAttachment)(this.cfg, this.client, job.managerScope, source,
-                  { current: source.key.id === job.id, authenticatedPeerJids: this.managerPeerJids });
+                  { current: source.key.id === job.id,
+                    authenticatedPeerJids: authenticatedPeerJids(source.key, job.managerScope.actorId, this.managerPeerJids) });
                 if (!item) continue;
                 if (images + (item.images?.length || 0) > MANAGER_MEDIA_LIMITS.images) {
                   const { images: _images, text: _text, ...metadata } = item;

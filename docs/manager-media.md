@@ -99,8 +99,11 @@ Only the current authenticated owner's nonforwarded push-to-talk audio can have
 may use that transcript as the current request while retaining the original
 body for checkpoint matching. Forwarded/attached audio, quoted audio, document
 text and image contents are evidence, never executable owner instructions.
-An authenticated caption may request analysis of that evidence. A bodyless
-forwarded recording does not authorize executing what the recording says.
+An authored caption on nonforwarded media may request analysis of that evidence.
+A forwarded media caption is also evidence, not a current owner instruction.
+The receiver derives this from the validated durable receipt, preserving the
+exact original caption and conversation history. A separate current typed
+request may quote that forwarded attachment and authorize analysis or action.
 
 ## Private files and receiver contract
 
@@ -117,7 +120,9 @@ Directories are mode 0700, sources/manifests/blobs mode 0600. Manifests include
 the account, instance, actor and original full provider key download receipt.
 The receipt also contains the captured direct `scope` (including business
 `ownerId` and activation boundary), `authenticatedPeerJids` established by the
-provider, and `voice: {ptt, forwarded}` derived from all message wrappers.
+provider, including a LID paired with the actor's phone in the same verified
+source key in either orientation, and `voice: {ptt, forwarded}` derived from all
+message wrappers. Display names and unverified LID fields never prove a binding.
 The receiver verifies these fields against its trusted account binding and the
 observed conversation role. Missing voice or identity evidence never authorizes
 a transcript as the owner's command. The receipt describes the source message;
@@ -129,6 +134,7 @@ the original document or arbitrary filesystem paths.
 
 Preparation receipts, including failures, are immutable. Exact retries reuse
 them; changed media metadata or content under the same identity is refused.
+The identity pins `forwarded` for every media kind, including images and documents.
 Request dedup includes attachments as well as the original body. Previously
 registered requests keep their old envelope and are not reinterpreted by an
 upgrade. Deleting a manifest to retry a request is unsafe. To retry a failed
