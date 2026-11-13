@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { normalizeConfig } from '../src/config.mjs';
-import { managerEnvelope, runOperationsManager } from '../src/manager.mjs';
+import { managerControlEnvelope, managerEnvelope, runManagerDeliveries, runManagerDeliveryAck, runManagerDeliveryHealth, runOperationsManager } from '../src/manager.mjs';
 import { OWNER, tmpDir } from './helpers.mjs';
 
 function config(manager = {}) {
@@ -29,7 +29,8 @@ function runScript(script, job = JOB, extra = {}) {
 test('manager config is opt-in, validates command and never overlaps Claude triggers', () => {
   const base = { accounts: [{ name: 'personal', instance: 'inst' }] };
   assert.equal(normalizeConfig(base, { EVOLUTION_API_KEY: 'k' }).manager.enabled, false);
-  for (const manager of [true, [], { enabled: 'true' }, { enabled: true }, { command: 'node' },
+  assert.equal(normalizeConfig(base, { EVOLUTION_API_KEY: 'k' }).manager.deliveries, false);
+  for (const manager of [true, [], { enabled: 'true' }, { deliveries: 'true' }, { enabled: true }, { command: 'node' },
     { command: '/bad\0path' }, { args: 'x' }, { args: [1] }, { args: ['\0'] }, { timeoutMs: 1 },
     { timeoutMs: 300001 }, { triggers: [] }, { triggers: ['bad name'] }, { triggers: ['@'] }]) {
     assert.throws(() => normalizeConfig({ ...base, manager }, { EVOLUTION_API_KEY: 'k' }), /config.manager/);
@@ -99,7 +100,7 @@ test('fixed argv stays literal and secrets or runtime hooks do not reach the chi
     const result = await runOperationsManager(cfg, job, cfg.stateDir);
     assert.equal(result.ok, true);
     const observed = JSON.parse(fs.readFileSync(artifact, 'utf8'));
-    assert.deepEqual(observed.args, [arg]);
+    assert.deepEqual(observed.args, [arg, 'request']);
     assert.equal(observed.envelope.body, body);
     assert.equal(observed.envelope.source, 'whatsapp');
     // macOS adds this locale setting when Node initializes CoreFoundation.
@@ -127,6 +128,54 @@ test('invalid output, nonzero exit and missing command return fixed errors witho
     const result = await fixture.run();
     assert.equal(result.ok, false);
     assert.doesNotMatch(result.error, /private-key/);
+  }
+});
+
+test('delivery subcommands use fixed argv, strict schemas and scope-only stdin', async () => {
+  const scope = { account: JOB.account, actorId: OWNER, destination: OWNER };
+  const delivery = { id: 'a'.repeat(64), token: '12345678-1234-4123-8123-123456789abc', body: 'progress',
+    conversationId: 'conversation-1', taskIds: ['task-1'], sourceMessageId: 'J1' };
+  for (const [command, run, response, extra] of [
+    ['deliveries', runManagerDeliveries, { ok: true, deliveries: [delivery] }, {}],
+    ['delivery-ack', runManagerDeliveryAck, { ok: true }, { id: delivery.id, token: delivery.token, providerMessageId: 'SENT1' }],
+    ['delivery-health', runManagerDeliveryHealth, { ok: true, unknownDeliveries: 1 }, {}],
+  ]) {
+    const cfg = config({ deliveries: true });
+    const artifact = path.join(cfg.stateDir, 'control-observed.json');
+    cfg.manager.args = ['-e', readInput + `require('fs').writeFileSync(${JSON.stringify(artifact)},JSON.stringify({args:process.argv.slice(1),input:JSON.parse(input)}));process.stdout.write(${JSON.stringify(JSON.stringify(response))});});`];
+    const envelope = { ...managerControlEnvelope(cfg, scope, 'conversation-1'), ...extra };
+    assert.deepEqual(await run(cfg, envelope), response);
+    const observed = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+    assert.deepEqual(observed.args, [command]);
+    assert.deepEqual(observed.input, envelope);
+    for (const invalid of [{ ...envelope, destination: '999@s.whatsapp.net' }, { ...envelope, source: 'email' },
+      { ...envelope, actorId: 'someone' }, { ...envelope, account: 'other' }, { ...envelope, conversationId: '../bad' }]) {
+      assert.equal((await run(cfg, invalid)).ok, false);
+    }
+    cfg.manager.deliveries = false;
+    assert.equal((await run(cfg, envelope)).ok, false);
+  }
+});
+
+test('delivery replies reject extra fields, bad ids, oversized content and duplicate reservations', async () => {
+  const d = { id: 'a'.repeat(64), token: '12345678-1234-4123-8123-123456789abc', body: 'progress',
+    conversationId: 'conversation-1', taskIds: ['task-1'], sourceMessageId: 'J1' };
+  const bad = [
+    { ok: true, deliveries: [], destination: OWNER }, { ok: true, deliveries: [d, d] },
+    ...[{ ...d, id: '../bad' }, { ...d, token: 'not-a-uuid' }, { ...d, body: 'x'.repeat(16001) },
+      { ...d, body: ' ' }, { ...d, taskIds: Array(101).fill('task') }, { ...d, conversationId: 'other' },
+      { ...d, sourceMessageId: '../unknown' }, { ...d, destination: OWNER }].map(value => ({ ok: true, deliveries: [value] })),
+  ];
+  for (const response of bad) {
+    const cfg = config({ deliveries: true, args: ['-e', `process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(${JSON.stringify(JSON.stringify(response))}));`] });
+    const envelope = managerControlEnvelope(cfg, { account: JOB.account, actorId: OWNER, destination: OWNER }, 'conversation-1');
+    assert.equal((await runManagerDeliveries(cfg, envelope)).ok, false);
+  }
+  for (const response of [{ ok: true, unknownDeliveries: -1 }, { ok: true, unknownDeliveries: 0.5 },
+    { ok: true, unknownDeliveries: 1, details: 'private' }]) {
+    const cfg = config({ deliveries: true, args: ['-e', `process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(${JSON.stringify(JSON.stringify(response))}));`] });
+    const envelope = managerControlEnvelope(cfg, { account: JOB.account, actorId: OWNER, destination: OWNER }, 'conversation-1');
+    assert.equal((await runManagerDeliveryHealth(cfg, envelope)).ok, false);
   }
 });
 

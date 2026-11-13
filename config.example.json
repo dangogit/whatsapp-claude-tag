@@ -20,6 +20,7 @@
   "stateDir": "~/.local/state/whatsapp-claude-tag",
   "manager": {
     "enabled": false,
+    "deliveries": false,
     "triggers": ["manager"],
     "command": "",
     "args": [],

@@ -12,6 +12,8 @@ import { appendAction, readActions, writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
 import { approvalAnswer, buildTriggerMatcher, canonicalTriggerName, defuseTrigger, parseVoiceTrigger } from './trigger.mjs';
 import { managerEnvelope, managerTrigger, managerUserJid } from './manager.mjs';
+import { ManagerDeliveryStore } from './manager-delivery-store.mjs';
+import { pollManagerDeliveries } from './manager-deliveries.mjs';
 import { mediaKind, ownVoiceNote, quotedMediaKind, saveMedia, transcribe } from './media.mjs';
 import { NOT_DONE } from './runner.mjs';
 import { isGroupJid, messageText, quotedId, quotedText, timestampOf, userPart } from './text.mjs';
@@ -31,6 +33,7 @@ export class AccountWatcher {
     this.queue = Promise.resolve();
     this.pendingJobs = 0;
     this.namesPromise = null;
+    this.managerDeliveryStore = new ManagerDeliveryStore(this.store.dir);
     this.matchClaude = buildTriggerMatcher(this.cfg.triggers, 'claude');
     this.matchManager = this.cfg.manager?.enabled ? buildTriggerMatcher(this.cfg.manager.triggers, 'manager') : () => null;
   }
@@ -119,7 +122,7 @@ export class AccountWatcher {
   }
 
   poll() {
-    this.polling = this.pollOnce().finally(() => { this.polling = null; });
+    this.polling = this.pollOnce().then(() => pollManagerDeliveries(this)).finally(() => { this.polling = null; });
     return this.polling;
   }
 
@@ -371,6 +374,8 @@ export class AccountWatcher {
     }
     const jobDir = this.store.jobDir(job.id);
     writeJsonAtomic(path.join(jobDir, 'job.json'), job);
+    const envelope = job.backend === 'manager' ? managerEnvelope(this.cfg, job) : null;
+    if (envelope) this.managerDeliveryStore.registerRequest(job, envelope);
     const base = {
       account: this.account.name, job: job.id,
       chat: job.chat.isGroup ? 'group' : job.chat.isOwnerChat ? 'self' : 'dm',
@@ -379,6 +384,7 @@ export class AccountWatcher {
     this.log('info', { ...base, event: 'run-start', requestChars: job.trigger.request.length });
 
     const res = await this.runJob(this.cfg, job, jobDir);
+    if (envelope && res.ok) this.managerDeliveryStore.registerRequest(job, envelope, res.conversationId);
     this.store.markDone(jobDir);
     const actions = readActions(jobDir);
     const delivered = actions.some(a => a.type === 'send' || a.type === 'approval');

@@ -10,6 +10,9 @@ import { RpcClient } from './rpc.mjs';
 import { runService } from './service.mjs';
 import { acquireLock } from './store.mjs';
 import { baileysAccounts, rpcSocketPath } from './transport.mjs';
+import { ManagerDeliveryStore } from './manager-delivery-store.mjs';
+import { managerDeliveryHealth } from './manager-deliveries.mjs';
+import { managerUserJid } from './manager.mjs';
 
 function log(level, fields) {
   process.stdout.write(`${JSON.stringify({ t: new Date().toISOString(), level, ...fields })}\n`);
@@ -64,6 +67,25 @@ async function check(cfg) {
     } catch (err) {
       failed = true;
       console.log(`FAIL ${account.name}: ${err.message}`);
+    }
+    const deliveryStore = new ManagerDeliveryStore(path.join(cfg.stateDir, account.name));
+    const local = deliveryStore.health();
+    if (cfg.manager.enabled && cfg.manager.deliveries) {
+      try {
+        const actorId = managerUserJid(await client.ownerJid(account.instance));
+        const scope = { account: { name: account.name, instance: account.instance }, actorId, destination: actorId };
+        const verify = async () => Boolean(actorId) && (!account.ownerChat || managerUserJid(account.ownerChat) === actorId)
+          && managerUserJid(await client.ownerJid(account.instance)) === actorId;
+        const health = await managerDeliveryHealth(cfg, deliveryStore, scope, verify);
+        failed ||= !health.ok;
+        console.log(`${health.ok ? 'ok  ' : 'FAIL'} ${account.name}: manager deliveries localUnknown=${health.localUnknown} remoteUnknown=${health.remoteUnknown} pendingAcks=${health.pendingAcks} corrupt=${health.corrupt} available=${health.available}`);
+      } catch {
+        failed = true;
+        console.log(`FAIL ${account.name}: manager delivery health unavailable`);
+      }
+    } else if (local.localUnknown || local.pendingAcks || local.corrupt) {
+      failed = true;
+      console.log(`FAIL ${account.name}: manager deliveries disabled with localUnknown=${local.localUnknown} pendingAcks=${local.pendingAcks} corrupt=${local.corrupt}`);
     }
   }
   const env = { ...process.env, CLAUDE_CONFIG_DIR: cfg.claude.configDir };

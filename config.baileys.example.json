@@ -2,6 +2,7 @@
   "transport": "baileys",
   "manager": {
     "enabled": false,
+    "deliveries": false,
     "triggers": ["manager"],
     "command": "",
     "args": [],

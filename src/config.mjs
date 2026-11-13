@@ -26,7 +26,7 @@ const DEFAULTS = {
   timezone: '',
   language: 'en',
   replyPrefix: '',
-  manager: { enabled: false, triggers: ['manager'], command: '', args: [], timeoutMs: 30_000 },
+  manager: { enabled: false, deliveries: false, triggers: ['manager'], command: '', args: [], timeoutMs: 30_000 },
   claude: {
     bin: 'claude',
     model: 'sonnet',
@@ -123,6 +123,7 @@ export function normalizeConfig(raw, env = process.env) {
   }
   const manager = cfg.manager;
   if (typeof manager.enabled !== 'boolean') throw new Error('config.manager.enabled must be a boolean');
+  if (typeof manager.deliveries !== 'boolean') throw new Error('config.manager.deliveries must be a boolean');
   if (!Array.isArray(manager.triggers) || !manager.triggers.length || !manager.triggers.every(n => typeof n === 'string' && /^@?[\p{L}\p{N}_-]{1,32}$/u.test(n))) {
     throw new Error('config.manager.triggers must be a nonempty list of names');
   }

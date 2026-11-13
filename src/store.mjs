@@ -14,11 +14,19 @@ const SEEN_MAX = 3000;
 const SENT_TAIL = 2000;
 const THREADS_MAX = 500;
 
-export function writeJsonAtomic(file, data) {
+export function writeJsonAtomic(file, data, { durable = false } = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+  if (durable) {
+    const fd = fs.openSync(tmp, 'r');
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  }
   fs.renameSync(tmp, file);
+  if (durable) {
+    const fd = fs.openSync(path.dirname(file), 'r');
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  }
 }
 
 function readJson(file, fallback) {
@@ -73,12 +81,12 @@ export class AccountStore {
   }
 
   // Message id of something a run sent -> the backend conversation that wrote it.
-  linkThread(messageId, info) {
+  linkThread(messageId, info, options) {
     const file = path.join(this.dir, 'threads.json');
     const threads = readJson(file, {});
     threads[messageId] = { ...info, t: Date.now() };
     const keep = Object.entries(threads).sort((a, b) => b[1].t - a[1].t).slice(0, THREADS_MAX);
-    writeJsonAtomic(file, Object.fromEntries(keep));
+    writeJsonAtomic(file, Object.fromEntries(keep), options);
   }
 
   getThread(messageId) {
