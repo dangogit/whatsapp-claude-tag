@@ -9,14 +9,26 @@ export class EvolutionClient {
     Object.defineProperty(this, 'apiKey', { value: apiKey, enumerable: false });
   }
 
-  async request(method, path, body, timeoutMs = 30_000) {
+  async request(method, path, body, timeoutMs = 30_000, maxBytes) {
     const res = await this.fetch(this.url + path, {
       method,
       headers: { apikey: this.apiKey, ...(body ? { 'content-type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(timeoutMs),
     });
-    const text = await res.text();
+    let text;
+    if (maxBytes !== undefined && res.body) {
+      const chunks = []; let size = 0;
+      for await (const chunk of res.body) {
+        size += chunk.length;
+        if (size > maxBytes) throw new Error('Evolution media response exceeds limit');
+        chunks.push(chunk);
+      }
+      text = Buffer.concat(chunks).toString('utf8');
+    } else {
+      text = await res.text();
+      if (maxBytes !== undefined && Buffer.byteLength(text) > maxBytes) throw new Error('Evolution media response exceeds limit');
+    }
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch { data = text; }
     if (!res.ok) {
@@ -99,10 +111,10 @@ export class EvolutionClient {
 
   // { base64, mimetype, fileName } of a media message. Evolution fetches it again from WhatsApp.
   // key: a message id, or the full key ({ id, remoteJid, fromMe, participant }) to pin the chat.
-  async getMediaBase64(instance, key) {
+  async getMediaBase64(instance, key, { maxBytes } = {}) {
     const k = typeof key === 'string' ? { id: key } : key;
     return this.request('POST', `/chat/getBase64FromMediaMessage/${enc(instance)}`,
-      { message: { key: k }, convertToMp4: false }, 120_000);
+      { message: { key: k }, convertToMp4: false }, 120_000, maxBytes);
   }
 
   // mediatype: image | video | audio | document. Returns the sent message key.

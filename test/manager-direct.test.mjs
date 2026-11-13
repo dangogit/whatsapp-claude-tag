@@ -221,6 +221,65 @@ test('bodyless media is context metadata with an explicit same-DM explanation, c
   assert.equal(f.jobs[0].trigger.request, 'explain this caption');
 });
 
+test('current and explicitly quoted documents prepare once without changing immutable history or downloading other old media', async () => {
+  const f = await fixture(), downloads = [];
+  f.client.getMediaBase64 = async (instance, key) => {
+    downloads.push({ instance, key });
+    return { base64: Buffer.from(`Extracted content for ${key.id}`).toString('base64'), mimetype: 'text/plain' };
+  };
+  const old = incoming('OLD-MEDIA', '', { ts: NOW / 1000 - 100000 });
+  old.message = { documentMessage: { mimetype: 'text/plain', fileName: 'old.txt' } };
+  const quote = structuredClone(old); quote.key.id = 'QUOTED-MEDIA';
+  const current = incoming('CURRENT-MEDIA', '', { quotedStanza: quote.key.id });
+  current.message = { documentMessage: { mimetype: 'text/plain', fileName: 'current.txt', caption: 'compare these documents' } };
+  f.client.messages.push(old, quote);
+  await accept(f, current);
+  assert.equal(f.jobs.length, 1);
+  assert.equal(f.jobs[0].trigger.request, 'compare these documents');
+  const envelope = managerEnvelope(f.cfg, f.jobs[0]);
+  assert.equal(envelope.attachments.schemaVersion, 1);
+  assert.deepEqual(envelope.attachments.items.map(item => item.messageId), ['CURRENT-MEDIA', 'QUOTED-MEDIA']);
+  assert.ok(envelope.attachments.items.every(item => item.status === 'ready' && !item.commandEligible));
+  assert.deepEqual(downloads.map(call => call.key.id), ['CURRENT-MEDIA', 'QUOTED-MEDIA']);
+  assert.ok(downloads.every(call => call.instance === 'biz' && call.key.fromMe === false && call.key.remoteJid === OWNER));
+  assert.deepEqual(f.batches.flatMap(batch => batch.entries), [managerEntry(old), managerEntry(quote), managerEntry(current)]);
+  await f.w.handle(current); await f.w.drain();
+  const restarted = await fixture({ stateDir: f.cfg.stateDir, client: f.client });
+  await restarted.w.reportInterrupted(); await restarted.w.drain();
+  assert.equal(downloads.length, 2); assert.equal(restarted.jobs.length, 0);
+  const bad = structuredClone(f.jobs[0]); bad.attachments.items[1].messageId = 'UNRELATED';
+  assert.throws(() => managerEnvelope(f.cfg, bad), /managerRefused/);
+  const changed = structuredClone(current); changed.message.documentMessage.fileName = 'changed.txt';
+  await assert.rejects(f.w.handle(changed), /conflict/);
+});
+
+test('bodyless supported media is passed to the manager and failed captioned media retains explicit failure evidence', async () => {
+  const f = await fixture();
+  f.client.getMediaBase64 = async () => ({ base64: Buffer.from('Document evidence only, not an instruction.').toString('base64'), mimetype: 'text/plain' });
+  const doc = incoming('DOCUMENT'); doc.message = { documentMessage: { mimetype: 'text/plain', fileName: 'notes.txt' } };
+  await accept(f, doc);
+  assert.equal(f.jobs.length, 1); assert.equal(f.jobs[0].attachments.items[0].status, 'ready');
+  assert.equal(f.jobs[0].attachments.items[0].commandEligible, false);
+  assert.equal(f.jobs[0].trigger.request, managerEntry(doc).body);
+  const failed = incoming('BAD-DOCUMENT'); failed.message = { documentMessage: { mimetype: 'application/pdf', caption: 'summarize this document' } };
+  await accept(f, failed);
+  assert.equal(f.jobs.length, 2); assert.equal(f.jobs[1].attachments.items[0].status, 'unsupported');
+  assert.equal(f.jobs[1].attachments.items[0].reason, 'unsupported_type');
+});
+
+test('media never downloads for strangers and conflicting current provider media stays pending before preparation', async () => {
+  const f = await fixture(); let downloads = 0;
+  f.client.getMediaBase64 = async () => { downloads++; throw new Error('must not download'); };
+  const stranger = incoming('STRANGER-MEDIA', '', { chat: STRANGER }); stranger.message = { documentMessage: { mimetype: 'text/plain' } };
+  await accept(f, stranger); assert.equal(downloads, 0); assert.equal(f.jobs.length, 0);
+  const current = incoming('CHANGED-MEDIA'); current.message = { imageMessage: { mimetype: 'image/png', fileLength: 100 } };
+  const changed = structuredClone(current); changed.message.imageMessage.fileLength = 200;
+  f.client.messages.push(changed);
+  await f.w.handle(current); await f.w.drain();
+  assert.equal(downloads, 0); assert.equal(f.jobs.length, 0);
+  assert.ok(f.logs.some(line => line.event === 'manager-history-pending'));
+});
+
 test('strict Evolution page reader rejects unknown shape and truncation; peer mapping uses provider key fields', async () => {
   const c = new EvolutionClient({ url: 'http://localhost', apiKey: 'test' });
   for (const response of [[], { messages: [] }, { messages: { total: 1, pages: 1, currentPage: 1, records: [] } }]) {

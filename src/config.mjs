@@ -43,6 +43,10 @@ const DEFAULTS = {
     whisperModel: '',
     language: 'auto',
     ffmpeg: 'ffmpeg',
+    pdfinfo: 'pdfinfo',
+    pdftotext: 'pdftotext',
+    pdftoppm: 'pdftoppm',
+    python: 'python3',
     tts: 'say',
     voiceHebrew: 'Carmit',
     voiceOther: '',
@@ -168,7 +172,7 @@ export function normalizeConfig(raw, env = process.env) {
   cfg.claude.webFetch = cfg.claude.webFetch === true;
   cfg.claude.mcpServers = normalizeExtensions(cfg.claude.mcpServers);
   if (typeof cfg.claude.systemNote !== 'string') throw new Error('config.claude.systemNote must be a string');
-  for (const k of ['whisperCli', 'whisperModel', 'language', 'ffmpeg', 'tts', 'voiceHebrew', 'voiceOther']) {
+  for (const k of ['whisperCli', 'whisperModel', 'language', 'ffmpeg', 'pdfinfo', 'pdftotext', 'pdftoppm', 'python', 'tts', 'voiceHebrew', 'voiceOther']) {
     if (typeof cfg.media[k] !== 'string') throw new Error(`config.media.${k} must be a string`);
     cfg.media[k] = expandHome(cfg.media[k]);
   }

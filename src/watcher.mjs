@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto';
 import { ManagerDeliveryStore } from './manager-delivery-store.mjs';
 import { pollManagerDeliveries } from './manager-deliveries.mjs';
 import { mediaKind, ownVoiceNote, quotedMediaKind, saveMedia, transcribe } from './media.mjs';
+import { MANAGER_MEDIA_LIMITS, managerMediaFailure, managerMediaIdentity, prepareManagerAttachment } from './manager-media.mjs';
 import { NOT_DONE } from './runner.mjs';
 import { isGroupJid, messageText, quotedId, quotedText, timestampOf, userPart } from './text.mjs';
 
@@ -296,7 +297,9 @@ export class AccountWatcher {
       const file = path.join(dir, 'job.json');
       if (fs.existsSync(file)) {
         const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
-        if (JSON.stringify(managerEnvelope(this.cfg, saved)) !== JSON.stringify(managerEnvelope(this.cfg, job))) throw new Error('manager message id conflict');
+        const { attachments: _attachments, ...savedEnvelope } = managerEnvelope(this.cfg, saved);
+        if (JSON.stringify(savedEnvelope) !== JSON.stringify(managerEnvelope(this.cfg, job))
+          || managerMediaIdentity(saved.directRecord) !== managerMediaIdentity(rec)) throw new Error('manager message id conflict');
         if (!fs.existsSync(path.join(dir, 'done'))) this.queueDirect(saved);
         return;
       }
@@ -530,8 +533,8 @@ export class AccountWatcher {
     }
     const jobDir = this.store.jobDir(job.id);
     if (!savedJob) writeJsonAtomic(path.join(jobDir, 'job.json'), job);
-    const envelope = job.backend === 'manager' ? managerEnvelope(this.cfg, job) : null;
-    if (envelope) this.managerDeliveryStore.registerRequest(job, envelope);
+    let envelope = job.backend === 'manager' ? managerEnvelope(this.cfg, job) : null;
+    if (envelope && job.managerScope?.route !== 'direct') this.managerDeliveryStore.registerRequest(job, envelope);
     const base = {
       account: this.account.name, job: job.id,
       chat: job.chat.isGroup ? 'group' : job.chat.isOwnerChat ? 'self' : 'dm',
@@ -547,10 +550,30 @@ export class AccountWatcher {
         const historyFile = path.join(jobDir, 'conversation-history.json');
         let entries;
         try {
-          if (fs.existsSync(historyFile)) entries = JSON.parse(fs.readFileSync(historyFile, 'utf8'));
+          // A previously registered request keeps its original immutable envelope,
+          // including jobs accepted before attachment support was installed.
+          const alreadyRegistered = this.managerDeliveryStore.request(job.managerScope, job.id);
+          const prepare = !job.mediaPrepared && !alreadyRegistered;
+          if (fs.existsSync(historyFile) && !prepare) entries = JSON.parse(fs.readFileSync(historyFile, 'utf8'));
           else {
             await this.refreshPeerJids();
-            entries = await readManagerHistory(this.client, job.account.instance, job.managerScope, this.managerPeerJids, job.directRecord);
+            entries = await readManagerHistory(this.client, job.account.instance, job.managerScope, this.managerPeerJids, job.directRecord, prepare ? async records => {
+              const items = []; let images = 0;
+              for (const source of records) {
+                if (!await this.managerJobAllowed(job)) throw new Error('manager media identity changed');
+                let item = await (this.prepareManagerMedia || prepareManagerAttachment)(this.cfg, this.client, job.managerScope, source, { current: source.key.id === job.id });
+                if (!item) continue;
+                if (images + (item.images?.length || 0) > MANAGER_MEDIA_LIMITS.images) {
+                  const { images: _images, text: _text, ...metadata } = item;
+                  item = { ...metadata, status: 'failed', commandEligible: false, reason: 'image_limit' };
+                }
+                images += item.images?.length || 0; items.push(item);
+              }
+              if (items.length) job.attachments = { schemaVersion: 1, items };
+              job.mediaPrepared = true;
+              envelope = managerEnvelope(this.cfg, job);
+              writeJsonAtomic(path.join(jobDir, 'job.json'), job, { durable: true });
+            } : undefined);
             writeJsonAtomic(historyFile, entries, { durable: true });
           }
           await syncManagerHistory(this.cfg, job.managerScope, envelope.conversationId, job.id, entries, this.managerSync);
@@ -564,9 +587,9 @@ export class AccountWatcher {
           return;
         }
         if (!await this.managerJobAllowed(job)) return;
-        res = job.unsupportedMedia ? { ok: true, result: this.cfg.language === 'he'
-          ? 'אני רואה שנשלחה מדיה, אבל לא יכול לקרוא את התוכן שלה. כתוב את הבקשה כטקסט או הוסף כיתוב.'
-          : 'I received media but cannot read its content. Please send the request as text or add a caption.',
+        this.managerDeliveryStore.registerRequest(job, envelope);
+        const currentMedia = job.attachments?.items.find(item => item.messageId === job.id);
+        res = job.unsupportedMedia && currentMedia?.status !== 'ready' ? { ok: true, result: managerMediaFailure(currentMedia, this.cfg.language),
           conversationId: envelope.conversationId, taskIds: [] } : await this.runJob(this.cfg, job, jobDir);
         if (!res.ok) {
           await this.notifyForJob(job, this.cfg.language === 'he'
