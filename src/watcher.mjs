@@ -114,13 +114,23 @@ export class AccountWatcher {
 
   async dedicatedOutgoing(key) {
     if (key?.fromMe !== true || key.participant || key.participantAlt) return false;
+    const remote = managerUserJid(key.remoteJid), alt = managerUserJid(key.remoteJidAlt);
+    if (!remote) return false;
     for (const peer of this.cfg.manager?.enabled ? this.cfg.manager.directPeers || [] : []) {
-      let aliases = [];
-      if (!peerKeyMatches(key, peer.ownerId) && key.remoteJid?.endsWith('@lid')) {
-        try { aliases = await this.client.peerJids(this.account.instance, peer.ownerId); } catch { continue; }
-      }
-      if (!peerKeyMatches(key, peer.ownerId, aliases)) continue;
-      try { if (managerUserJid(await this.client.ownerJid(this.account.instance)) === peer.actorId) return true; } catch { return true; }
+      // A provider phone identity proves an unrelated destination without a LID
+      // lookup. For LID-only traffic, establish the sending owner first.
+      if (remote !== peer.ownerId && !remote.endsWith('@lid')) continue;
+      if (remote.endsWith('@lid') && alt.endsWith('@s.whatsapp.net') && alt !== peer.ownerId) continue;
+      let owner;
+      try { owner = managerUserJid(await this.client.ownerJid(this.account.instance)); } catch { return true; }
+      if (owner !== peer.actorId) continue;
+      if (peerKeyMatches(key, peer.ownerId)) return true;
+      let aliases;
+      try { aliases = await this.client.peerJids(this.account.instance, peer.ownerId); } catch { return true; }
+      // An unavailable or empty mapping cannot prove that this LID belongs to
+      // another chat. Refuse fallback to Claude until the mapping is resolved.
+      if (!Array.isArray(aliases) || !aliases.length || !aliases.every(j => /^\d+@lid$/.test(j))) return true;
+      if (peerKeyMatches(key, peer.ownerId, aliases)) return true;
     }
     return false;
   }

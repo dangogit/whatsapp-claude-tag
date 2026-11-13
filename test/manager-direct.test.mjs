@@ -346,3 +346,26 @@ test('full direct reconciliation accepts same-second and delayed older arrivals 
   assert.equal(restarted.store.hasSeen('SAMETIME'), true);
   assert.equal(restarted.store.hasSeen('DELAYEDOLDER'), true);
 });
+
+test('personal LID-only routing fails closed on unavailable mapping while proven unrelated phone DMs keep Claude', async () => {
+  for (const failure of ['throws', 'empty', 'malformed']) {
+    const f = await fixture({ account: 'personal', executor: async () => ({ ok: true, result: 'legacy accepted', sessionId: 'legacy' }) });
+    const calls = [];
+    f.client.ownerJid = async () => { calls.push('owner'); return OWNER; };
+    f.client.peerJids = async () => {
+      calls.push('aliases');
+      if (failure === 'throws') throw new Error('mapping temporarily unavailable');
+      return failure === 'empty' ? [] : [STRANGER];
+    };
+    await f.w.handle(incoming('LIDTAG', '@claude execute', { chat: BUSINESS_LID, fromMe: true }));
+    await f.w.handle(incoming('LIDMANAGER', '@manager execute', { chat: BUSINESS_LID, fromMe: true }));
+    await f.w.drain();
+    assert.equal(f.jobs.length, 0, failure);
+    assert.equal(f.client.sent.length, 0, failure);
+    assert.deepEqual(calls, ['owner', 'aliases', 'owner', 'aliases'], failure);
+    await f.w.handle(incoming('OTHERPHONE', '@claude unrelated work', { chat: STRANGER, fromMe: true }));
+    await f.w.handle(incoming('OTHERALT', '@claude another unrelated task', { chat: '777777@lid', alt: STRANGER, fromMe: true }));
+    await f.w.drain();
+    assert.deepEqual(f.jobs.map(j => j.backend), ['claude', 'claude'], failure);
+  }
+});
