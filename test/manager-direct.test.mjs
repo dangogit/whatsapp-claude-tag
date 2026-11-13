@@ -324,6 +324,105 @@ test('identical provider records from phone and LID queries deduplicate, conflic
   await assert.rejects(readManagerHistory(f.client, 'biz', f.w.directScope(), [PEER_LID], rec), /conflicting/);
 });
 
+test('distinct historical provider rows with two-second timestamp skew import once at the earliest observation without executing old commands', async () => {
+  const f = await fixture();
+  const oldAt = NOW / 1000 - 100000;
+  const older = { ...incoming('OLD-DUP', '@manager historical command', { chat: PEER_LID, ts: oldAt }), id: 'database-old' };
+  const later = { ...older, id: 'database-later', messageTimestamp: oldAt + 2 };
+  const between = incoming('BETWEEN', 'intervening context', { chat: PEER_LID, ts: oldAt + 1 });
+  f.client.messages.push(older, between, later);
+  const current = incoming('CURRENT', 'current request', { quotedStanza: 'OLD-DUP' });
+  await accept(f, current);
+  assert.equal(f.jobs.length, 1);
+  const entries = f.batches.flatMap(batch => batch.entries);
+  assert.deepEqual(entries.map(entry => entry.id), ['OLD-DUP', 'BETWEEN', 'CURRENT']);
+  assert.deepEqual(entries[0], managerEntry(older));
+  assert.equal(entries.at(-1).quotedId, 'OLD-DUP');
+  await f.w.poll(); await f.w.drain();
+  assert.equal(f.jobs.length, 1);
+});
+
+test('historical duplicates shared across phone and LID streams keep the same canonical entry and provider ordering', async () => {
+  const f = await fixture();
+  const oldAt = NOW / 1000 - 100000;
+  const older = { ...incoming('OLD-DUP', 'same context', { chat: PEER_LID, alt: OWNER, ts: oldAt }), id: 'database-old' };
+  const later = { ...older, id: 'database-later', messageTimestamp: oldAt + 2 };
+  const peer = incoming('SAME-TIME', 'same-second context', { chat: PEER_LID, alt: OWNER, ts: oldAt });
+  const current = incoming('CURRENT');
+  f.client.messages.push(older, peer, later, current);
+  const first = await readManagerHistory(f.client, 'biz', f.w.directScope(), [PEER_LID], current);
+  const retry = await readManagerHistory(f.client, 'biz', f.w.directScope(), [PEER_LID], current);
+  assert.deepEqual(first.map(entry => entry.id), ['OLD-DUP', 'SAME-TIME', 'CURRENT']);
+  assert.deepEqual(first, retry);
+  assert.deepEqual(first[0], managerEntry(older));
+});
+
+test('identical current records with distinct database IDs deduplicate while the current request remains exact', async () => {
+  const f = await fixture();
+  const current = { ...incoming('CURRENT', 'unchanged request', { chat: PEER_LID, alt: OWNER }), id: 'database-one' };
+  f.client.messages.push(current, { ...current, id: 'database-two' });
+  const entries = await readManagerHistory(f.client, 'biz', f.w.directScope(), [PEER_LID], current);
+  assert.deepEqual(entries, [managerEntry(current)]);
+  await f.w.handle(current); await f.w.drain();
+  assert.equal(f.jobs.length, 1);
+});
+
+test('historical duplicate reconciliation refuses changed content, unproven database identities and timestamp ambiguity', async () => {
+  const oldAt = NOW / 1000 - 100000;
+  const cases = {
+    body: (a, b) => { b.message = { conversation: 'changed context' }; },
+    role: (a, b) => { b.key = { ...b.key, fromMe: true }; },
+    quote: (a, b) => { b.contextInfo = { stanzaId: 'other-quote' }; },
+    skew: (a, b) => { b.messageTimestamp = oldAt + 3; },
+    activation: (a, b) => { a.messageTimestamp = NOW / 1000 - 86401; b.messageTimestamp = NOW / 1000 - 86400; },
+    current: (a, b) => { a.messageTimestamp = NOW / 1000 - 5; b.messageTimestamp = NOW / 1000 - 3; },
+    missingId: (a, b) => { delete b.id; },
+    invalidId: (a, b) => { b.id = '../not-a-database-id'; },
+    repeatedDatabaseRow: (a, b) => { b.id = a.id; },
+  };
+  for (const [name, change] of Object.entries(cases)) {
+    const f = await fixture();
+    const a = { ...incoming('DUP', 'original context', { ts: oldAt }), id: 'database-one' };
+    const b = { ...structuredClone(a), id: 'database-two', messageTimestamp: oldAt + 2 };
+    change(a, b);
+    const current = incoming('CURRENT');
+    f.client.messages.push(a, b, current);
+    await assert.rejects(readManagerHistory(f.client, 'biz', f.w.directScope(), [], current), /conflicting|duplicate/, name);
+  }
+  const f = await fixture();
+  f.client.messages = [0, 2, 4].map((offset, index) => ({ ...incoming('DUP', 'same context', { ts: oldAt + offset }), id: `database-${index}` }));
+  const current = incoming('CURRENT'); f.client.messages.push(current);
+  await assert.rejects(readManagerHistory(f.client, 'biz', f.w.directScope(), [], current), /conflicting/);
+});
+
+test('the same database row repeated across history pages remains a pagination failure', async () => {
+  const f = await fixture();
+  const oldAt = NOW / 1000 - 100000;
+  const duplicate = { ...incoming('DUP', 'context', { ts: oldAt }), id: 'same-database-row' };
+  const current = incoming('CURRENT');
+  f.client.messages = [duplicate, structuredClone(duplicate), ...Array.from({ length: 98 }, (_, i) => incoming(`FILLER-${i}`, 'context', { ts: oldAt + i + 1 })), current];
+  await assert.rejects(readManagerHistory(f.client, 'biz', f.w.directScope(), [], current), /duplicate manager history page record/);
+});
+
+test('database rows cannot change across alias streams and identical duplicates cannot conceal conflicting provider order', async () => {
+  const f = await fixture();
+  const oldAt = NOW / 1000 - 100000;
+  const old = { ...incoming('OLD', 'context', { chat: PEER_LID, alt: OWNER, ts: oldAt }), id: 'same-database-row' };
+  const current = incoming('CURRENT'); f.client.messages.push(old, current);
+  const normal = f.client.findMessagePage.bind(f.client);
+  f.client.findMessagePage = async (...args) => {
+    const page = await normal(...args);
+    if (args[1].key.remoteJid === PEER_LID) page.records = page.records.map(row => ({ ...row, messageTimestamp: row.messageTimestamp + 1 }));
+    return page;
+  };
+  await assert.rejects(readManagerHistory(f.client, 'biz', f.w.directScope(), [PEER_LID], current), /conflicting manager history database row/);
+
+  const other = await fixture();
+  const duplicate = { ...incoming('DUP', 'context', { ts: oldAt }), id: 'database-one' };
+  other.client.messages = [duplicate, incoming('BETWEEN', 'context', { ts: oldAt }), { ...duplicate, id: 'database-two' }, current];
+  await assert.rejects(readManagerHistory(other.client, 'biz', other.w.directScope(), [], current), /inconsistent provider history order/);
+});
+
 test('full direct reconciliation accepts same-second and delayed older arrivals behind previous rows across restart', async () => {
   const f = await fixture();
   // Evolution promises timestamp DESC only, so a newer arrival can be behind
