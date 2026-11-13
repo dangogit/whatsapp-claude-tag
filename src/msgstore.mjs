@@ -152,6 +152,10 @@ export class MessageStore {
       conds.push('(remote_jid = ? OR remote_jid_alt = ?)');
       args.push(where.key.remoteJid, where.key.remoteJid);
     }
+    if (where.key?.remoteJidAlt && !where.key?.remoteJid) {
+      conds.push('remote_jid_alt = ?');
+      args.push(where.key.remoteJidAlt);
+    }
     if (where.key?.id) {
       conds.push('id = ?');
       args.push(where.key.id);
@@ -161,6 +165,20 @@ export class MessageStore {
     const sql = `SELECT record FROM messages ${conds.length ? `WHERE ${conds.join(' AND ')}` : ''}
       ORDER BY ts DESC, rowid DESC LIMIT ? OFFSET ?`;
     return this.db.prepare(sql).all(...args, n, (p - 1) * n).map(r => JSON.parse(r.record));
+  }
+
+  findPage(where = {}, limit = 100, page = 1) {
+    const conds = [], args = [];
+    if (typeof where.key?.fromMe === 'boolean') { conds.push('from_me = ?'); args.push(where.key.fromMe ? 1 : 0); }
+    if (where.key?.remoteJid) { conds.push('(remote_jid = ? OR remote_jid_alt = ?)'); args.push(where.key.remoteJid, where.key.remoteJid); }
+    if (where.key?.remoteJidAlt && !where.key?.remoteJid) { conds.push('remote_jid_alt = ?'); args.push(where.key.remoteJidAlt); }
+    const total = this.db.prepare(`SELECT COUNT(*) AS total FROM messages ${conds.length ? `WHERE ${conds.join(' AND ')}` : ''}`).get(...args).total;
+    return { records: this.find(where, limit, page), total, pages: Math.ceil(total / limit), currentPage: page };
+  }
+
+  peerJids(actorId) {
+    return this.db.prepare(`SELECT DISTINCT remote_jid FROM messages WHERE remote_jid_alt = ? AND from_me = 0`).all(actorId)
+      .map(row => row.remote_jid).filter(jid => /^\d+@lid$/.test(jid));
   }
 
   putContact(jid, name) {

@@ -137,7 +137,10 @@ export class AccountStore {
     const root = path.join(this.dir, 'jobs');
     const dirs = fs.readdirSync(root).map(name => ({ name, t: fs.statSync(path.join(root, name)).mtimeMs }));
     dirs.sort((a, b) => b.t - a.t);
-    for (const d of dirs.slice(keep)) fs.rmSync(path.join(root, d.name), { recursive: true, force: true });
+    for (const d of dirs.slice(keep)) {
+      const dir = path.join(root, d.name);
+      if (fs.existsSync(path.join(dir, 'done')) || fs.existsSync(path.join(dir, 'abandoned'))) fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 }
 

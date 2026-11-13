@@ -11,7 +11,9 @@ import { confirmedTargets, sameUser } from './policy.mjs';
 import { appendAction, readActions, writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
 import { approvalAnswer, buildTriggerMatcher, canonicalTriggerName, defuseTrigger, parseVoiceTrigger } from './trigger.mjs';
-import { managerEnvelope, managerTrigger, managerUserJid } from './manager.mjs';
+import { managerEnvelope, managerTrigger, managerUserJid, managerJobScope, managerScopeConfigured } from './manager.mjs';
+import { managerBody, peerKeyMatches, readManagerHistory, syncManagerHistory } from './manager-history.mjs';
+import { createHash } from 'node:crypto';
 import { ManagerDeliveryStore } from './manager-delivery-store.mjs';
 import { pollManagerDeliveries } from './manager-deliveries.mjs';
 import { mediaKind, ownVoiceNote, quotedMediaKind, saveMedia, transcribe } from './media.mjs';
@@ -33,6 +35,8 @@ export class AccountWatcher {
     this.queue = Promise.resolve();
     this.pendingJobs = 0;
     this.namesPromise = null;
+    this.directQueued = new Set();
+    this.managerPeerJids = [];
     this.managerDeliveryStore = new ManagerDeliveryStore(this.store.dir);
     this.matchClaude = buildTriggerMatcher(this.cfg.triggers, 'claude');
     this.matchManager = this.cfg.manager?.enabled ? buildTriggerMatcher(this.cfg.manager.triggers, 'manager') : () => null;
@@ -85,7 +89,46 @@ export class AccountWatcher {
       account: { name: this.account.name, instance: this.account.instance } };
   }
 
+  directPeer() {
+    return this.cfg.manager?.enabled && this.cfg.manager.directPeers?.find(p => p.account === this.account.name);
+  }
+
+  directScope() {
+    const peer = this.directPeer();
+    return peer ? { route: 'direct', ownerId: peer.ownerId, enabledSince: peer.enabledSince, actorId: peer.actorId, destination: peer.actorId,
+      account: { name: this.account.name, instance: this.account.instance } } : null;
+  }
+
+  managerScopes() {
+    return [this.managerScope(), this.directScope()].filter(scope => scope && this.managerScopeMatches(scope));
+  }
+
+  async refreshPeerJids() {
+    const peer = this.directPeer();
+    if (!peer || !await this.managerIdentityMatches(this.directScope())) return;
+    if (typeof this.client.peerJids !== 'function') throw new Error('trusted manager peer mapping unavailable');
+    const aliases = await this.client.peerJids(this.account.instance, peer.actorId);
+    if (!Array.isArray(aliases) || !aliases.every(j => /^\d+@lid$/.test(j))) throw new Error('invalid manager peer mapping');
+    this.managerPeerJids = aliases;
+  }
+
+  async dedicatedOutgoing(key) {
+    if (key?.fromMe !== true || key.participant || key.participantAlt) return false;
+    for (const peer of this.cfg.manager?.enabled ? this.cfg.manager.directPeers || [] : []) {
+      let aliases = [];
+      if (!peerKeyMatches(key, peer.ownerId) && key.remoteJid?.endsWith('@lid')) {
+        try { aliases = await this.client.peerJids(this.account.instance, peer.ownerId); } catch { continue; }
+      }
+      if (!peerKeyMatches(key, peer.ownerId, aliases)) continue;
+      try { if (managerUserJid(await this.client.ownerJid(this.account.instance)) === peer.actorId) return true; } catch { return true; }
+    }
+    return false;
+  }
+
   managerScopeMatches(scope) {
+    if (scope?.route === 'direct') return managerScopeConfigured(this.cfg, scope)
+      && scope.account.name === this.account.name && scope.account.instance === this.account.instance
+      && this.managerOwnerChat === scope.ownerId && managerUserJid(this.ownerChat) === scope.ownerId;
     const actor = managerUserJid(scope?.actorId);
     const account = this.cfg.accounts.find(a => a.name === scope?.account?.name && a.instance === scope?.account?.instance);
     return this.cfg.manager?.enabled === true && Boolean(actor) && actor === this.managerOwnerChat
@@ -98,13 +141,13 @@ export class AccountWatcher {
     if (!this.managerScopeMatches(scope)) return false;
     try {
       const connectedOwner = await this.client.ownerJid(scope.account.instance);
-      return managerUserJid(connectedOwner) === managerUserJid(scope.actorId) && this.managerScopeMatches(scope);
+      return managerUserJid(connectedOwner) === managerUserJid(scope.ownerId || scope.actorId) && this.managerScopeMatches(scope);
     } catch { return false; }
   }
 
   async managerJobAllowed(job) {
     try { managerEnvelope(this.cfg, job); } catch { return false; }
-    return this.managerIdentityMatches({ account: job.account, actorId: job.authenticatedOwnerChat, destination: job.ownerChat });
+    return this.managerIdentityMatches(managerJobScope(job));
   }
 
   // Newest own messages, paging back while a page still holds unseen messages inside
@@ -129,6 +172,52 @@ export class AccountWatcher {
   async pollOnce() {
     const oldest = Math.floor(this.now() / 1000) - CATCH_UP_SECONDS;
     const fresh = await this.fetchFresh(oldest);
+    if (this.directPeer()) {
+      if (!this.nextDirectRetry || this.now() >= this.nextDirectRetry) {
+        this.nextDirectRetry = this.now() + 30_000;
+        for (const { job } of this.store.unfinishedJobs(Infinity)) {
+          if (job.managerScope?.route === 'direct' && await this.managerJobAllowed(job)) this.queueDirect(job);
+        }
+      }
+      await this.refreshPeerJids();
+      const scope = this.directScope();
+      if (await this.managerIdentityMatches(scope)) {
+        const activation = Math.floor(Date.parse(scope.enabledSince) / 1000);
+        const scopeHash = createHash('sha256').update(JSON.stringify(scope)).digest('hex');
+        const cursorFile = path.join(this.store.dir, `manager-cursor-${scopeHash}.json`);
+        const cursors = fs.existsSync(cursorFile) ? JSON.parse(fs.readFileSync(cursorFile, 'utf8')) : {};
+        const nextCursors = { ...cursors }, candidates = new Map();
+        for (const jid of [scope.actorId, ...this.managerPeerJids]) {
+          const stream = [];
+          let finished = false, expectedTotal;
+          for (let page = 1; page <= 1000; page++) {
+            const result = await this.client.findMessagePage(this.account.instance, { key: { remoteJid: jid,
+              ...(jid === scope.actorId ? { remoteJidAlt: scope.actorId } : {}) } }, BATCH, page);
+            const rows = result.records;
+            if (!Array.isArray(rows) || result.currentPage !== page || !Number.isSafeInteger(result.total) || result.total < 0
+              || result.pages !== Math.ceil(result.total / BATCH)
+              || rows.length !== Math.min(BATCH, Math.max(0, result.total - (page - 1) * BATCH))
+              || (expectedTotal !== undefined && expectedTotal !== result.total)) throw new Error('manager incoming pagination unavailable');
+            expectedTotal = result.total;
+            if (page === 1 && rows.length) nextCursors[jid] = rows[0].key?.id;
+            for (const rec of rows) {
+              if (!peerKeyMatches(rec?.key, scope.actorId, this.managerPeerJids)) throw new Error('manager incoming crossed scope');
+              if (rec.key.id === cursors[jid] || timestampOf(rec) <= activation) { finished = true; break; }
+              if (rec.key.fromMe === false) stream.push(rec);
+            }
+            if (finished || page >= result.pages) { finished = true; break; }
+          }
+          if (!finished) throw new Error('manager incoming catch-up limit exceeded');
+          for (const rec of stream.reverse()) if (!candidates.has(rec.key.id)) candidates.set(rec.key.id, rec);
+        }
+        for (const rec of [...candidates.values()].sort((a, b) => timestampOf(a) - timestampOf(b))) {
+          if (!await this.managerIdentityMatches(scope)) throw new Error('manager incoming identity changed');
+          await this.handle(rec);
+          this.store.markSeen([rec.key.id]);
+        }
+        writeJsonAtomic(cursorFile, nextCursors, { durable: true });
+      }
+    }
     if (!fresh.length) return;
     const sent = this.store.sentIds();
     // Mark first: a message that crashes its handler must not run again on every poll.
@@ -153,7 +242,12 @@ export class AccountWatcher {
   // A run the process never finished (stop, crash, reinstall) is reported, not
   // retried: it may already have sent something, and a retry could send it twice.
   async reportInterrupted() {
-    for (const { job, dir } of this.store.unfinishedJobs(INTERRUPTED_MAX_AGE_MS)) {
+    for (const { job, dir } of this.store.unfinishedJobs(Infinity)) {
+      if (job.managerScope?.route === 'direct') {
+        if (await this.managerJobAllowed(job)) this.queueDirect(job);
+        continue;
+      }
+      if (Date.now() - fs.statSync(path.join(dir, 'job.json')).mtimeMs > INTERRUPTED_MAX_AGE_MS) continue;
       this.store.markAbandoned(dir);
       await this.notifyForJob(job, t(this.cfg.language, 'interrupted', { request: job.trigger.request.slice(0, 120) }));
       this.log('warn', { account: this.account.name, event: 'run-interrupted', job: job.id });
@@ -178,7 +272,33 @@ export class AccountWatcher {
   }
 
   async handle(rec) {
-    if (rec?.key?.fromMe !== true) return;
+    if (rec?.key?.fromMe === false) {
+      const scope = this.directScope();
+      if (!scope || timestampOf(rec) <= Math.floor(Date.parse(scope.enabledSince) / 1000)
+        || !peerKeyMatches(rec.key, scope.actorId, this.managerPeerJids) || !await this.managerIdentityMatches(scope)) return;
+      if (this.store.sentIds().has(rec.key.id)) return;
+      const peerJids = [...new Set([...this.managerPeerJids, rec.key.remoteJid, rec.key.remoteJidAlt].filter(j => j?.endsWith('@lid')))];
+      this.managerPeerJids = peerJids;
+      const body = managerBody(rec);
+      if (body.ignored) return;
+      const trig = { backend: 'manager', name: this.cfg.manager.triggers[0], request: body.body, managerScope: structuredClone(scope) };
+      const job = await this.buildJob(rec, trig);
+      job.directRecord = structuredClone(rec);
+      job.unsupportedMedia = body.unsupported;
+      const dir = this.store.jobDir(job.id);
+      const file = path.join(dir, 'job.json');
+      if (fs.existsSync(file)) {
+        const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (JSON.stringify(managerEnvelope(this.cfg, saved)) !== JSON.stringify(managerEnvelope(this.cfg, job))) throw new Error('manager message id conflict');
+        if (!fs.existsSync(path.join(dir, 'done'))) this.queueDirect(saved);
+        return;
+      }
+      if (this.managerDeliveryStore.request(scope, job.id)) return;
+      writeJsonAtomic(file, job, { durable: true });
+      this.queueDirect(job);
+      return;
+    }
+    if (rec?.key?.fromMe !== true || await this.dedicatedOutgoing(rec.key)) return;
     this.learnOwnerLid(rec.key);
     const text = messageText(rec);
     const qid = quotedId(rec);
@@ -223,6 +343,15 @@ export class AccountWatcher {
     this.enqueue(rec, trig);
   }
 
+  queueDirect(job) {
+    if (this.directQueued.has(job.id)) return;
+    this.directQueued.add(job.id);
+    this.pendingJobs++;
+    this.queue = this.queue.then(() => this.runOne(job.directRecord, null, null, job))
+      .catch(() => this.log('error', { account: this.account.name, event: 'manager-job-pending', job: job.id }))
+      .finally(() => { this.directQueued.delete(job.id); this.pendingJobs--; });
+  }
+
   // Transcribe a voice note and decide whether it is addressed to the assistant.
   async voiceRequest(rec) {
     const dir = path.join(this.store.jobDir(rec.key.id), 'media');
@@ -260,11 +389,29 @@ export class AccountWatcher {
     return this.sendNotification(text, this.account.instance, this.ownerChat);
   }
 
-  async notifyForJob(job, text) {
+  async notifyForJob(job, text, kind = 'result') {
     if (!job.backend || job.backend === 'claude') return this.notifyOwner(text);
     if (job.backend !== 'manager' || !await this.managerJobAllowed(job)) {
       this.log('warn', { account: this.account.name, event: 'manager-notification-refused', job: job.id });
       return '';
+    }
+    if (job.managerScope?.route === 'direct') {
+      const scope = managerJobScope(job);
+      const file = this.managerDeliveryStore.notificationFile(scope, job.id, kind);
+      const digest = createHash('sha256').update(text).digest('hex');
+      if (fs.existsSync(file)) {
+        const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (record.digest !== digest || JSON.stringify(record.scope) !== JSON.stringify(scope) || record.messageId !== job.id) throw new Error('manager notification changed');
+        if (record.providerMessageId) this.store.recordSent(record.providerMessageId);
+        return record.providerMessageId || '';
+      }
+      writeJsonAtomic(file, { state: 'reserved', digest, scope, messageId: job.id }, { durable: true });
+      if (!await this.managerJobAllowed(job)) return '';
+      const key = await this.client.sendText(job.account.instance, job.ownerChat, defuseTrigger(text));
+      if (!key?.id) throw new Error('manager notification outcome unknown');
+      writeJsonAtomic(file, { state: 'sent', digest, scope, messageId: job.id, providerMessageId: key.id }, { durable: true });
+      this.store.recordSent(key.id);
+      return key.id;
     }
     return this.sendNotification(text, job.account.instance, job.ownerChat);
   }
@@ -304,7 +451,8 @@ export class AccountWatcher {
 
   async buildJob(rec, trig, thread = null) {
     const key = rec.key;
-    if (key?.fromMe !== true) throw new Error('only owner-sent messages can become jobs');
+    const direct = trig.managerScope?.route === 'direct';
+    if (key?.fromMe !== true && !(direct && key?.fromMe === false)) throw new Error('only owner-sent messages can become jobs');
     const backend = trig.backend;
     if (!['manager', 'claude'].includes(backend)
       || (backend === 'claude' && managerTrigger(this.cfg, trig.name))) throw new Error('invalid trigger backend');
@@ -312,7 +460,7 @@ export class AccountWatcher {
     const alt = key.remoteJidAlt || '';
     const isGroup = isGroupJid(key.remoteJid);
     const isOwnerChat = !isGroup && this.isOwnerChat(key);
-    if (backend === 'manager' && (!this.isManagerOwnerChat(key) || !this.managerScopeMatches(trig.managerScope)
+    if (backend === 'manager' && (!(direct ? peerKeyMatches(key, trig.managerScope.actorId, this.managerPeerJids) : this.isManagerOwnerChat(key)) || !this.managerScopeMatches(trig.managerScope)
       || !managerTrigger(this.cfg, trig.name))) throw new Error('manager requests require the owner self-chat');
     if (backend === 'manager' && thread && (!this.managerScopeMatches(thread.managerScope)
       || thread.actorId !== thread.managerScope.actorId)) thread = null;
@@ -332,9 +480,10 @@ export class AccountWatcher {
       chat: { jid: key.remoteJid, alt, name, isGroup, isOwnerChat, sendTo },
       ownerChat: backend === 'manager' ? trig.managerScope.destination : this.ownerChat,
       ownerJids: backend === 'manager' ? [...this.managerOwnerJids] : this.ownerJids,
-      ...(backend === 'manager' ? { authenticatedOwnerChat: trig.managerScope.actorId } : {}),
+      ...(backend === 'manager' ? { authenticatedOwnerChat: trig.managerScope.ownerId || trig.managerScope.actorId } : {}),
+      ...(direct ? { managerScope: structuredClone(trig.managerScope), authenticatedPeerJids: [...this.managerPeerJids] } : {}),
       trigger: {
-        key: { id: key.id, remoteJid: key.remoteJid, fromMe: true, ...(key.participant ? { participant: key.participant } : {}) },
+        key: { id: key.id, remoteJid: key.remoteJid, fromMe: key.fromMe, ...(key.remoteJidAlt ? { remoteJidAlt: key.remoteJidAlt } : {}), ...(key.participant ? { participant: key.participant } : {}) },
         request: trig.request,
         quoted: backend === 'manager' || thread || trig.omitQuoted ? '' : quotedText(rec),
         // Earlier requests in this conversation still name the chats it may use.
@@ -357,8 +506,8 @@ export class AccountWatcher {
     };
   }
 
-  async runOne(rec, trig, thread = null) {
-    if (trig.voice) {
+  async runOne(rec, trig, thread = null, savedJob = null) {
+    if (trig?.voice) {
       let heard = null;
       try { heard = await this.voiceRequest(rec); } catch (err) {
         this.log('warn', { account: this.account.name, event: 'voice-failed', message: rec.key.id, error: err.message });
@@ -367,13 +516,13 @@ export class AccountWatcher {
       if (!heard) { this.log('info', { account: this.account.name, event: 'voice-not-addressed', message: rec.key.id }); return; }
       trig = { ...trig, request: heard.request };
     }
-    const job = await this.buildJob(rec, trig, thread);
+    const job = savedJob || await this.buildJob(rec, trig, thread);
     if (job.backend === 'manager' && !await this.managerJobAllowed(job)) {
       this.log('warn', { account: this.account.name, event: 'manager-job-refused', job: job.id });
       return;
     }
     const jobDir = this.store.jobDir(job.id);
-    writeJsonAtomic(path.join(jobDir, 'job.json'), job);
+    if (!savedJob) writeJsonAtomic(path.join(jobDir, 'job.json'), job);
     const envelope = job.backend === 'manager' ? managerEnvelope(this.cfg, job) : null;
     if (envelope) this.managerDeliveryStore.registerRequest(job, envelope);
     const base = {
@@ -383,9 +532,46 @@ export class AccountWatcher {
     };
     this.log('info', { ...base, event: 'run-start', requestChars: job.trigger.request.length });
 
-    const res = await this.runJob(this.cfg, job, jobDir);
+    let res;
+    if (job.managerScope?.route === 'direct') {
+      const resultFile = path.join(jobDir, 'direct-result.json');
+      if (fs.existsSync(resultFile)) res = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+      else {
+        const historyFile = path.join(jobDir, 'conversation-history.json');
+        let entries;
+        try {
+          if (fs.existsSync(historyFile)) entries = JSON.parse(fs.readFileSync(historyFile, 'utf8'));
+          else {
+            await this.refreshPeerJids();
+            entries = await readManagerHistory(this.client, job.account.instance, job.managerScope, this.managerPeerJids, job.directRecord);
+            writeJsonAtomic(historyFile, entries, { durable: true });
+          }
+          await syncManagerHistory(this.cfg, job.managerScope, envelope.conversationId, job.id, entries, this.managerSync);
+        } catch {
+          // Keep the durable job pending. A transient read or sync failure must
+          // never turn a partly imported conversation into an executable request.
+          this.log('warn', { account: this.account.name, event: 'manager-history-pending', job: job.id });
+          await this.notifyForJob(job, this.cfg.language === 'he'
+            ? 'עדיין לא הצלחתי לטעון את כל היסטוריית השיחה. הבקשה נשמרה ואנסה שוב, אבל טרם התחלתי לבצע אותה.'
+            : 'I could not load the complete conversation history. Your request is saved and will be retried; execution has not started.', 'history');
+          return;
+        }
+        if (!await this.managerJobAllowed(job)) return;
+        res = job.unsupportedMedia ? { ok: true, result: this.cfg.language === 'he'
+          ? 'אני רואה שנשלחה מדיה, אבל לא יכול לקרוא את התוכן שלה. כתוב את הבקשה כטקסט או הוסף כיתוב.'
+          : 'I received media but cannot read its content. Please send the request as text or add a caption.',
+          conversationId: envelope.conversationId, taskIds: [] } : await this.runJob(this.cfg, job, jobDir);
+        if (!res.ok) {
+          await this.notifyForJob(job, this.cfg.language === 'he'
+            ? 'לא קיבלתי אישור ממנהל המשימות. הבקשה נשמרה ואבדוק שוב את אותה בקשה.'
+            : 'The manager has not confirmed this request. It is saved and I will check the same request again.', 'request');
+          return;
+        }
+        writeJsonAtomic(resultFile, res, { durable: true });
+      }
+    } else res = await this.runJob(this.cfg, job, jobDir);
     if (envelope && res.ok) this.managerDeliveryStore.registerRequest(job, envelope, res.conversationId);
-    this.store.markDone(jobDir);
+    if (job.managerScope?.route !== 'direct') this.store.markDone(jobDir);
     const actions = readActions(jobDir);
     const delivered = actions.some(a => a.type === 'send' || a.type === 'approval');
     const replyIds = actions.filter(a => a.type === 'send' && a.id).map(a => a.id);
@@ -407,8 +593,8 @@ export class AccountWatcher {
       for (const id of replyIds.filter(Boolean)) {
         this.store.linkThread(id, job.backend === 'manager' ? {
           backend: 'manager', jobId: job.id, triggerName: job.triggerName,
-          actorId: job.authenticatedOwnerChat, conversationId: res.conversationId, taskIds: res.taskIds,
-          managerScope: { account: job.account, actorId: job.authenticatedOwnerChat, destination: job.ownerChat },
+          actorId: managerJobScope(job).actorId, conversationId: res.conversationId, taskIds: res.taskIds,
+          managerScope: managerJobScope(job),
         } : {
           backend: 'claude',
           jobId: job.id, sessionId: res.sessionId, triggerName: job.triggerName,
@@ -421,6 +607,7 @@ export class AccountWatcher {
       ...base, event: 'run-end', ok: res.ok, error: res.ok ? undefined : res.error,
       actions: actions.map(a => a.type), costUsd: res.costUsd, durationMs: res.durationMs,
     });
+    if (job.managerScope?.route === 'direct' && replyIds.length) this.store.markDone(jobDir);
     this.store.pruneJobs();
   }
 }

@@ -228,6 +228,18 @@ export class BaileysClient {
     return store ? store.find(where, limit, page) : [];
   }
 
+  async findMessagePage(instance, where = {}, limit = 100, page = 1) {
+    const store = this.conn(instance).store;
+    if (!store) throw new Error('manager history store unavailable');
+    return store.findPage(where, limit, page);
+  }
+
+  async peerJids(instance, actorId) {
+    const store = this.conn(instance).store;
+    if (!store) throw new Error('manager peer mapping unavailable');
+    return store.peerJids(actorId);
+  }
+
   async findContacts(instance) {
     return this.conn(instance).store?.contacts() || [];
   }

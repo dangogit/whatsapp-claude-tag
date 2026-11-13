@@ -3,14 +3,14 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { managerDeliveryValid, managerUserJid } from './manager.mjs';
+import { managerDeliveryValid, managerUserJid, managerJobScope } from './manager.mjs';
 import { writeJsonAtomic } from './store.mjs';
 
 const HASH = /^[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,255}$/;
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const validId = value => typeof value === 'string' && ID.test(value);
-const scopeKey = scope => [scope.account.name, scope.account.instance, scope.actorId, scope.destination];
+const scopeKey = scope => [scope.account.name, scope.account.instance, scope.actorId, scope.destination, ...(scope.route ? [scope.route, scope.ownerId, scope.enabledSince] : [])];
 const sameScope = (a, b) => JSON.stringify(scopeKey(a)) === JSON.stringify(scopeKey(b));
 const deliveryKey = d => [d.id, d.token, d.body, d.conversationId, d.taskIds, d.sourceMessageId];
 
@@ -18,7 +18,8 @@ function validScope(scope) {
   return scope && typeof scope.account?.name === 'string' && scope.account.name
     && typeof scope.account.instance === 'string' && scope.account.instance
     && Boolean(managerUserJid(scope.actorId)) && managerUserJid(scope.actorId) === scope.actorId
-    && scope.destination === scope.actorId;
+    && scope.destination === scope.actorId
+    && (!scope.route || (scope.route === 'direct' && /^\d+@s\.whatsapp\.net$/.test(scope.ownerId) && scope.ownerId !== scope.actorId && typeof scope.enabledSince === 'string' && Number.isFinite(Date.parse(scope.enabledSince))));
 }
 
 function durableJson(file, value) {
@@ -38,8 +39,14 @@ function files(dir) {
 
 export class ManagerDeliveryStore {
   constructor(accountDir) {
+    this.notificationsDir = path.join(accountDir, 'manager-notifications');
     this.requestsDir = path.join(accountDir, 'manager-requests');
     this.journalDir = path.join(accountDir, 'manager-deliveries');
+  }
+
+  notificationFile(scope, messageId, kind) {
+    if (!validScope(scope) || !validId(messageId) || !['result', 'history', 'request'].includes(kind)) throw new Error('invalid manager notification scope');
+    return path.join(this.notificationsDir, `${hash([...scopeKey(scope), messageId, kind])}.json`);
   }
 
   requestFile(scope, messageId) {
@@ -56,7 +63,7 @@ export class ManagerDeliveryStore {
   }
 
   registerRequest(job, envelope, acceptedConversationId = '') {
-    const scope = { account: job.account, actorId: job.authenticatedOwnerChat, destination: job.ownerChat };
+    const scope = managerJobScope(job);
     const file = this.requestFile(scope, job.id);
     const existing = read(file);
     const digest = hash(envelope.body);
@@ -144,6 +151,15 @@ export class ManagerDeliveryStore {
         const record = this.journal(file.slice(0, -5));
         if (record.state === 'reserved') out.localUnknown++;
         if (record.state === 'sent') out.pendingAcks++;
+      } catch { out.corrupt++; }
+    }
+    for (const file of files(this.notificationsDir)) {
+      try {
+        const record = read(path.join(this.notificationsDir, file));
+        if (!record || !validScope(record.scope) || !validId(record.messageId) || !HASH.test(record.digest)
+          || !['reserved', 'sent'].includes(record.state)
+          || (record.state === 'sent' && !validId(record.providerMessageId))) out.corrupt++;
+        else if (record.state === 'reserved') out.localUnknown++;
       } catch { out.corrupt++; }
     }
     for (const file of files(this.requestsDir)) {

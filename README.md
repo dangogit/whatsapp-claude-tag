@@ -203,12 +203,13 @@ The other machine has to be awake and reachable (Tailscale works well for this).
 
 ### Optional operations manager
 
-You can route a separate tag to a trusted local CLI. This is off by default. `@claude` keeps using Claude Code; `@manager` uses the configured adapter only in your own self-chat. The adapter gets your new request, with no quoted text, media or chat history. A reply to its answer continues the manager conversation. Switching tags starts a request with the selected backend and does not carry the other backend's conversation or quote.
+You can route a separate tag to a trusted local CLI. This is off by default. `@claude` keeps using Claude Code; `@manager` uses the configured adapter in your own self-chat by default. The adapter gets your new request, with no quoted text, media or chat history. A reply to its answer continues the manager conversation. Switching tags starts a request with the selected backend and does not carry the other backend's conversation or quote.
 
 ```json
 "manager": {
   "enabled": false,
   "deliveries": false,
+  "directPeers": [],
   "triggers": ["manager"],
   "command": "/absolute/path/to/operations-manager",
   "args": ["whatsapp"],
@@ -248,7 +249,19 @@ The child receives only `HOME`, `TMPDIR`, `LANG` and a fixed system `PATH`; macO
 
 The timeout defaults to 30 seconds and accepts 1 to 300 seconds. All processes in the adapter's process group are stopped on exit or timeout. The `request` command must durably enqueue long-running work before returning the immediate acknowledgment. Failures produce a fixed message with no raw stdout or stderr, never fall back to Claude, and are not retried automatically.
 
-#### Optional task progress
+#### Dedicated business-number conversation
+
+`manager.directPeers` defaults to `[]`. To dedicate a business account to one authorized person, configure one row per business account with exactly `account`, `ownerId`, `actorId` and `enabledSince`. `enabledSince` is an explicit RFC3339 activation time with timezone; only incoming records strictly after its whole provider second can execute. Earlier messages are imported as context only. This boundary is persisted in queued request scopes and never reset on restart. `account` names a configured account, `ownerId` is its connected business phone JID, and `actorId` is the authorized person's phone JID. Both JIDs use the canonical `digits@s.whatsapp.net` form and must differ. Do not use a contact name or LID in this configuration.
+
+Incoming ordinary text and media captions in that exact DM route to the manager without a tag. The raw text, including an optional tag, stays intact. Requests, acknowledgments, failures, progress and completion remain in that DM, sent from the business account. The personal account's outgoing watcher suppresses its Claude and manager routing for this dedicated conversation. Other chats keep their existing routing. Group messages, strangers, sender conflicts, outgoing echoes and unknown LIDs never authorize a request. The connected business owner and configured peer are rechecked before every outbound send.
+
+Before each direct request, the watcher imports all history available from the configured provider in that DM, including verified phone/LID aliases. The provider's message keys establish aliases; cached contact names and `owner.json` do not. Imports include old user and business messages as observed context only, never executable commands or proof that the manager acted. A bodyless media record is explicit metadata; the watcher explains that its content was not read. The import stops at the current provider message, including its quoted-message ID. It excludes later queued messages and refuses missing, malformed, conflicting, truncated or ambiguously ordered history. Baileys history is the locally received history retained under `baileys.keepDays`, not a claim to all historical WhatsApp messages.
+
+The adapter must implement `conversation-sync` before enabling a direct peer. It receives the same schema-version-1 control identity as delivery calls plus `throughId` (current provider message ID), `entries` and `complete`. Entries contain exactly `id`, `role` (`user` or `assistant`), `body`, `at` (RFC3339 with timezone) and optional `quotedId`. Each invocation has at most 100 entries and 65,536 UTF-8 bytes. Bodies are at most 32,768 UTF-8 bytes. Entry IDs are 1 to 128 ASCII letters, digits, `.`, `_`, `:`, `@` or `-`, beginning with a letter or digit. All batches share `throughId`; only the final batch sets `complete:true` and includes the current user record. The response is exactly `{ "ok": true, "conversationId": "...", "stored": 1, "complete": true, "throughId": "..." }`, where `stored` is the durable conversation entry count. `complete` may already be true when replaying an earlier batch of a completed checkpoint.
+
+The direct conversation ID is always `whatsapp:` plus SHA-256 of `JSON.stringify([account, actorId])`. The adapter must deduplicate immutable entries and checkpoint membership, accept exact retries, reject conflicting IDs, and require a completed matching checkpoint before executing the current request. Old imported commands never execute. Durable per-chat provider cursors catch up after outages without discarding incoming requests after a ten-minute window. The watcher durably saves each accepted job and its history snapshot before sync; interrupted sync/request calls retry idempotently. A provider send with an unknown result is reserved locally and never automatically resent. `check` includes those unresolved immediate sends in its local-unknown count.
+
+### Optional task progress
 
 Set `manager.deliveries` to `true` only when your adapter implements the delivery protocol below. It defaults to `false`. Every 30 seconds, including when there are no new WhatsApp messages, the watcher polls each registered manager conversation. These calls use the same executable, fixed arguments, limited environment, timeout and output cap as requests.
 
@@ -266,7 +279,7 @@ The adapter reserves each delivery durably before returning it, rechecks the ori
 
 `id` is 64 lowercase hexadecimal characters and `token` is a UUID. Each response may contain up to 100 deliveries, each body is limited to 16,000 characters, and each task list to 100 IDs. The whole response must fit the 64 KiB stdout limit. Conversation IDs must match the polled conversation, and `sourceMessageId` must refer to a request already recorded locally for that actor, account, instance and conversation. All response shapes reject extra fields. No delivery may supply a destination.
 
-Before sending, the watcher saves a durable local reservation and rechecks the connected WhatsApp identity. The destination is always the verified owner. Immediately after a successful provider response it saves the provider message ID, links swipe-replies to the manager conversation, and invokes `delivery-ack` with the same scope plus:
+Before sending, the watcher saves a durable local reservation and rechecks the connected WhatsApp identity. The destination is the verified owner for self-chat requests or the configured actor for a direct peer, with the original business-owner binding retained. Immediately after a successful provider response it saves the provider message ID, links swipe-replies to the manager conversation, and invokes `delivery-ack` with the same scope plus:
 
 ```json
 {"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","token":"12345678-1234-4123-8123-123456789abc","providerMessageId":"WHATSAPP_MESSAGE_ID"}
@@ -274,7 +287,7 @@ Before sending, the watcher saves a durable local reservation and rechecks the c
 
 The acknowledgment response is exactly `{"ok":true}`. The adapter must validate acknowledgment scope against the original request and accept repeated acknowledgments for the same reservation and provider ID. After a restart, a known provider send retries only its acknowledgment. A reservation without a saved provider ID has an unknown outcome and is never sent again automatically, including after a thrown send call or a crash before the first local journal write. It requires separate reconciliation against provider evidence.
 
-The read-only `delivery-health` subcommand receives the same conversation scope and returns exactly `{"ok":true,"unknownDeliveries":0}`. It must include outstanding reservations even if the watcher lost their response before creating a local journal. `check` and watcher health logs report local unknown outcomes, remote unknown reservations, pending acknowledgments and corrupt state separately. Request mappings live under `<stateDir>/<account>/manager-requests/`, and delivery evidence under `manager-deliveries/`; do not delete these records to retry an uncertain send.
+The read-only `delivery-health` subcommand receives the same conversation scope and returns exactly `{"ok":true,"unknownDeliveries":0}`. It must include outstanding reservations even if the watcher lost their response before creating a local journal. `check` and watcher health logs report local unknown outcomes, remote unknown reservations, pending acknowledgments and corrupt state separately. Request mappings live under `<stateDir>/<account>/manager-requests/`, and delivery evidence under `manager-deliveries/`, and direct immediate-send reservations under `manager-notifications/`; do not delete these records to retry an uncertain send.
 
 ### Settings
 

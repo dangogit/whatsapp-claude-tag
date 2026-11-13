@@ -30,22 +30,53 @@ export function managerDeliveryValid(value) {
     && reply(value.body) && validId(value.conversationId) && taskIds(value.taskIds) && validId(value.sourceMessageId);
 }
 
-export function managerControlEnvelope(cfg, scope, conversationId) {
+export function managerScopeConfigured(cfg, scope) {
   const actor = managerUserJid(scope?.actorId);
   const account = cfg.accounts.find(a => a.name === scope?.account?.name && a.instance === scope?.account?.instance);
-  if (!cfg.manager?.enabled || !cfg.manager.deliveries || !actor || actor !== scope.actorId
-    || managerUserJid(scope.destination) !== actor || !account
-    || (account.ownerChat && managerUserJid(account.ownerChat) !== actor) || !validId(conversationId)) throw new Error('managerRefused');
-  return { schemaVersion: 1, source: 'whatsapp', account: account.name, actorId: actor, conversationId };
+  if (!cfg.manager?.enabled || !actor || actor !== scope.actorId || scope.destination !== actor || !account) return false;
+  if (scope.route === 'direct') return (cfg.manager.directPeers || []).some(peer => peer.account === account.name
+    && peer.actorId === actor && peer.ownerId === scope.ownerId && peer.enabledSince === scope.enabledSince)
+    && (!account.ownerChat || managerUserJid(account.ownerChat) === scope.ownerId);
+  return !scope.route && !scope.ownerId && (!account.ownerChat || managerUserJid(account.ownerChat) === actor);
 }
 
-function validControlEnvelope(cfg, envelope, extra = []) {
-  return cfg.manager?.enabled === true && cfg.manager.deliveries === true
+export function managerJobScope(job) {
+  return job.managerScope || { account: job.account, actorId: job.authenticatedOwnerChat, destination: job.ownerChat };
+}
+
+export function managerConversationId(account, actorId) {
+  return `whatsapp:${createHash('sha256').update(JSON.stringify([account, actorId])).digest('hex')}`;
+}
+
+export function managerControlEnvelope(cfg, scope, conversationId) {
+  if (!managerScopeConfigured(cfg, scope) || !validId(conversationId)) throw new Error('managerRefused');
+  return { schemaVersion: 1, source: 'whatsapp', account: scope.account.name, actorId: scope.actorId, conversationId };
+}
+
+function validControlEnvelope(cfg, envelope, extra = [], requireDeliveries = true) {
+  return cfg.manager?.enabled === true && (!requireDeliveries || cfg.manager.deliveries === true)
     && exactObject(envelope, ['schemaVersion', 'source', 'account', 'actorId', 'conversationId', ...extra])
     && envelope.schemaVersion === 1 && envelope.source === 'whatsapp'
     && Boolean(managerUserJid(envelope.actorId)) && managerUserJid(envelope.actorId) === envelope.actorId
-    && cfg.accounts.some(a => a.name === envelope.account && (!a.ownerChat || managerUserJid(a.ownerChat) === envelope.actorId))
+    && cfg.accounts.some(a => a.name === envelope.account && ((!a.ownerChat || managerUserJid(a.ownerChat) === envelope.actorId)
+      || cfg.manager.directPeers?.some(p => p.account === a.name && p.actorId === envelope.actorId
+        && (!a.ownerChat || managerUserJid(a.ownerChat) === p.ownerId))))
     && validId(envelope.conversationId);
+}
+
+export async function runManagerConversationSync(cfg, envelope) {
+  const entryId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/.test(value);
+  if (!validControlEnvelope(cfg, envelope, ['entries', 'complete', 'throughId'], false)
+    || !entryId(envelope.throughId) || typeof envelope.complete !== 'boolean'
+    || !Array.isArray(envelope.entries) || envelope.entries.length > 100
+    || Buffer.byteLength(JSON.stringify(envelope)) > 65536
+    || !envelope.entries.every(e => e && entryId(e.id) && ['user', 'assistant'].includes(e.role)
+      && typeof e.body === 'string' && e.body.trim() && Buffer.byteLength(e.body) <= 32768
+      && typeof e.at === 'string' && /(?:Z|[+-]\d{2}:\d{2})$/.test(e.at) && Number.isFinite(Date.parse(e.at))
+      && (!Object.hasOwn(e, 'quotedId') || entryId(e.quotedId)))) return { ok: false, error: t(cfg.language, 'managerRefused') };
+  return invokeManager(cfg, 'conversation-sync', envelope, data => exactObject(data, ['ok', 'conversationId', 'stored', 'complete', 'throughId'])
+    && data.ok === true && data.conversationId === envelope.conversationId && typeof data.complete === 'boolean' && (!envelope.complete || data.complete)
+    && data.throughId === envelope.throughId && Number.isSafeInteger(data.stored) && data.stored >= 0);
 }
 
 export function managerUserJid(value) {
@@ -60,6 +91,25 @@ export function managerTrigger(cfg, name) {
 
 export function managerEnvelope(cfg, job) {
   const key = job.trigger?.key;
+  if (job.managerScope?.route === 'direct') {
+    const scope = job.managerScope;
+    const aliases = job.authenticatedPeerJids || [];
+    if (!Array.isArray(aliases) || !aliases.every(jid => /^\d+@lid$/.test(jid))) throw new Error('managerRefused');
+    const peerJids = [scope.actorId, ...aliases];
+    if (!managerScopeConfigured(cfg, scope) || job.backend !== 'manager' || key?.fromMe !== false
+      || job.chat?.isGroup || !managerUserJid(key.remoteJid) || key.participant
+      || !peerJids.includes(managerUserJid(key.remoteJid))
+      || (key.remoteJidAlt && !peerJids.includes(managerUserJid(key.remoteJidAlt)))
+      || job.account?.name !== scope.account.name || job.account?.instance !== scope.account.instance
+      || !job.directRecord || job.directRecord.key?.id !== job.id
+      || !Number.isFinite(Number(job.directRecord.messageTimestamp))
+      || Number(job.directRecord.messageTimestamp) <= Math.floor(Date.parse(scope.enabledSince) / 1000)
+      || job.authenticatedOwnerChat !== scope.ownerId || job.ownerChat !== scope.destination || job.chat.sendTo !== scope.destination
+      || key.id !== job.id || !validId(job.id) || typeof job.trigger.request !== 'string' || !job.trigger.request.trim()
+      || Buffer.byteLength(job.trigger.request) > 32768) throw new Error('managerRefused');
+    return { schemaVersion: 1, source: 'whatsapp', account: scope.account.name, actorId: scope.actorId, messageId: job.id,
+      conversationId: managerConversationId(scope.account.name, scope.actorId), body: job.trigger.request };
+  }
   const owner = managerUserJid(job.authenticatedOwnerChat);
   const account = cfg.accounts.find(a => a.name === job.account?.name && a.instance === job.account?.instance);
   if (!managerTrigger(cfg, job.triggerName) || job.backend !== 'manager' || key?.fromMe !== true
