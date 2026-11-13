@@ -561,7 +561,8 @@ export class AccountWatcher {
               const items = []; let images = 0;
               for (const source of records) {
                 if (!await this.managerJobAllowed(job)) throw new Error('manager media identity changed');
-                let item = await (this.prepareManagerMedia || prepareManagerAttachment)(this.cfg, this.client, job.managerScope, source, { current: source.key.id === job.id });
+                let item = await (this.prepareManagerMedia || prepareManagerAttachment)(this.cfg, this.client, job.managerScope, source,
+                  { current: source.key.id === job.id, authenticatedPeerJids: this.managerPeerJids });
                 if (!item) continue;
                 if (images + (item.images?.length || 0) > MANAGER_MEDIA_LIMITS.images) {
                   const { images: _images, text: _text, ...metadata } = item;

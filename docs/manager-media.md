@@ -115,6 +115,13 @@ root from an envelope or accept a model-supplied path. Files are:
 
 Directories are mode 0700, sources/manifests/blobs mode 0600. Manifests include
 the account, instance, actor and original full provider key download receipt.
+The receipt also contains the captured direct `scope` (including business
+`ownerId` and activation boundary), `authenticatedPeerJids` established by the
+provider, and `voice: {ptt, forwarded}` derived from all message wrappers.
+The receiver verifies these fields against its trusted account binding and the
+observed conversation role. Missing voice or identity evidence never authorizes
+a transcript as the owner's command. The receipt describes the source message;
+whether it is current or quoted is determined by the receiving request.
 Blobs are content-addressed PNGs. The receiver resolves only a validated 64-hex
 image ID under its configured blob root, rejects symlinks, checks size/hash/type,
 and passes image bytes to a vision-capable model. It never asks a model to read

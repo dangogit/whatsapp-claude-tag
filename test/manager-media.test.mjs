@@ -34,7 +34,8 @@ test('TXT and CSV are decoded locally, exact provider key is pinned and receipts
     assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
     assert.equal(fs.statSync(path.join(dir, 'source')).mode & 0o777, 0o600);
     const receipt = JSON.parse(fs.readFileSync(path.join(dir, 'attachment.json'))).receipt;
-    assert.deepEqual(receipt, { account: scope.account, actorId: OWNER, key: rec.key });
+    assert.deepEqual(receipt, { account: scope.account, actorId: OWNER, scope, key: rec.key,
+      authenticatedPeerJids: [], voice: { ptt: false, forwarded: false } });
     assert.deepEqual(await prepareManagerAttachment(cfg, client, scope, rec, { current: true }), item);
     assert.equal(client.calls.length, 1, 'identical retries reuse immutable preparation');
     rec.message.documentMessage.fileLength = 123;
@@ -126,10 +127,15 @@ test('audio decoding checks actual duration and only current own PTT may carry c
   const current = await prepareManagerAttachment(cfg, client, scope, rec, { current: true });
   assert.equal(current.status, 'ready', current.reason); assert.equal(current.commandEligible, true);
   assert.equal(current.text, 'Please inspect the project status.');
+  const receipt = JSON.parse(fs.readFileSync(path.join(cfg.stateDir, 'manager-media', 'records', current.id, 'attachment.json'))).receipt;
+  assert.deepEqual(receipt.voice, { ptt: true, forwarded: false });
+  assert.deepEqual(receipt.key, rec.key);
   const quote = await prepareManagerAttachment(cfg, client, scope, rec, { current: false });
   assert.equal(quote.commandEligible, false); assert.equal(client.calls.length, 1);
   const forwarded = record('audioMessage', 'audio/wav', { ptt: true, contextInfo: { isForwarded: true } }); forwarded.key.id = 'FORWARDED';
   assert.equal((await prepareManagerAttachment(cfg, client, scope, forwarded, { current: true })).commandEligible, false);
+  const invalidAliases = ['other@example.com'];
+  await assert.rejects(prepareManagerAttachment(cfg, client, scope, rec, { authenticatedPeerJids: invalidAliases }), /peer aliases/);
   const long = record('audioMessage', 'audio/wav', { ptt: true }); long.key.id = 'LONG';
   const result = await prepareManagerAttachment(cfg, client, scope, long, { current: true, invoke: async (_cmd, args) => {
     const dest = args.at(-1); fs.writeFileSync(dest, ''); fs.truncateSync(dest, (MANAGER_MEDIA_LIMITS.seconds + 1) * 32000);

@@ -28,8 +28,9 @@ export function managerMediaRecord(rec) {
     for (const [type, kind] of Object.entries(MEDIA_KINDS)) if (message[type]) {
       const data = message[type];
       if (data.contextInfo) infos.push(data.contextInfo);
-      return { kind, data, ownVoice: type === 'audioMessage' && data.ptt === true
-        && !infos.some(info => info.isForwarded || Number(info.forwardingScore) > 0) };
+      const voice = { ptt: type === 'audioMessage' && data.ptt === true,
+        forwarded: infos.some(info => info.isForwarded === true || Number(info.forwardingScore) > 0) };
+      return { kind, data, voice, ownVoice: voice.ptt && !voice.forwarded };
     }
     const wrapper = ['ephemeralMessage', 'viewOnceMessage', 'viewOnceMessageV2'].map(key => message[key]).find(value => value?.message);
     if (wrapper?.contextInfo) infos.push(wrapper.contextInfo);
@@ -193,10 +194,11 @@ async function processMedia(source, actual, cfg, dir, blobs, invoke) {
   return { text: checkedText(readPrivate(source, MANAGER_MEDIA_LIMITS.bytes).toString('utf8')) };
 }
 
-export async function prepareManagerAttachment(cfg, client, scope, rec, { current = false, invoke = run } = {}) {
+export async function prepareManagerAttachment(cfg, client, scope, rec, { current = false, authenticatedPeerJids = [], invoke = run } = {}) {
   const media = managerMediaRecord(rec);
   if (!media) return null;
   if (!MESSAGE_ID.test(rec?.key?.id) || !scope?.account?.name || !scope.account.instance || !scope.actorId) throw new Error('invalid manager media source');
+  if (!Array.isArray(authenticatedPeerJids) || !authenticatedPeerJids.every(value => typeof value === 'string' && /^\d+@lid$/.test(value))) throw new Error('invalid manager media peer aliases');
   const id = digest(JSON.stringify([scope.account.name, scope.account.instance, scope.actorId, rec.key.id]));
   const root = path.join(cfg.stateDir, 'manager-media'), records = path.join(root, 'records'), blobs = path.join(root, 'blobs');
   for (const dir of [root, records, blobs]) privateDir(dir);
@@ -261,7 +263,9 @@ export async function prepareManagerAttachment(cfg, client, scope, rec, { curren
   // Failure receipts are immutable too: retries cannot silently substitute a new
   // transcript after an earlier request was already accepted by the manager.
   writeJsonAtomic(manifest, { schemaVersion: 1, identity,
-    receipt: { account: scope.account, actorId: scope.actorId, key: rec.key }, item: { ...item, commandEligible: false } }, { durable: true });
+    receipt: { account: scope.account, actorId: scope.actorId, scope, key: rec.key,
+      authenticatedPeerJids: [...new Set(authenticatedPeerJids)].sort(), voice: media.voice },
+    item: { ...item, commandEligible: false } }, { durable: true });
   return item;
 }
 
