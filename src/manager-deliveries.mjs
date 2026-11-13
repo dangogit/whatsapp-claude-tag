@@ -54,8 +54,7 @@ export async function managerDeliveryHealth(cfg, store, scope, verifyIdentity, h
     ok: available && local.localUnknown === 0 && local.pendingAcks === 0 && local.corrupt === 0 && remoteUnknown === 0 };
 }
 
-async function poll(w) {
-  const scope = w.managerScope();
+async function pollScope(w, scope) {
   if (!await identityMatches(w, scope)) return;
   const store = w.managerDeliveryStore;
   const invoke = w.managerCommands || commands;
@@ -96,7 +95,9 @@ export function pollManagerDeliveries(w) {
   if (w.cfg.manager?.enabled !== true || w.cfg.manager.deliveries !== true
     || (w.nextManagerDeliveryPoll !== undefined && w.now() < w.nextManagerDeliveryPoll)) return Promise.resolve();
   w.nextManagerDeliveryPoll = w.now() + POLL_MS;
-  w.managerDeliveryPolling = poll(w).catch(() => {
+  w.managerDeliveryPolling = (async () => {
+    for (const scope of w.managerScopes ? w.managerScopes() : [w.managerScope()]) await pollScope(w, scope);
+  })().catch(() => {
     w.log('error', { account: w.account.name, event: 'manager-delivery-state-failed' });
   }).finally(() => { w.managerDeliveryPolling = null; });
   return w.managerDeliveryPolling;

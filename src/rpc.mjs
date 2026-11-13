@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 
-const METHODS = ['findMessages', 'findContacts', 'fetchGroups', 'ownerJid', 'connectionState', 'sendText', 'deleteForEveryone'];
+const METHODS = ['findMessages', 'findMessagePage', 'peerJids', 'findContacts', 'fetchGroups', 'ownerJid', 'connectionState', 'sendText', 'deleteForEveryone'];
 const MAX_BODY = 1 << 20;
 const TIMEOUTS = { fetchGroups: 180_000, sendText: 60_000, deleteForEveryone: 60_000 };
 

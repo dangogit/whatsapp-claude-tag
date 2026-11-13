@@ -26,7 +26,7 @@ const DEFAULTS = {
   timezone: '',
   language: 'en',
   replyPrefix: '',
-  manager: { enabled: false, deliveries: false, triggers: ['manager'], command: '', args: [], timeoutMs: 30_000 },
+  manager: { enabled: false, deliveries: false, directPeers: [], triggers: ['manager'], command: '', args: [], timeoutMs: 30_000 },
   claude: {
     bin: 'claude',
     model: 'sonnet',
@@ -128,6 +128,22 @@ export function normalizeConfig(raw, env = process.env) {
     throw new Error('config.manager.triggers must be a nonempty list of names');
   }
   manager.triggers = manager.triggers.map(n => n.replace(/^@/, '').toLowerCase());
+  if (!Array.isArray(manager.directPeers)) throw new Error('config.manager.directPeers must be an array');
+  const peers = new Set();
+  manager.directPeers = manager.directPeers.map(peer => {
+    if (!peer || Object.keys(peer).sort().join(',') !== 'account,actorId,enabledSince,ownerId'
+      || !cfg.accounts.some(a => a.name === peer.account)
+      || !/^\d+@s\.whatsapp\.net$/.test(peer.ownerId) || !/^\d+@s\.whatsapp\.net$/.test(peer.actorId)
+      || typeof peer.enabledSince !== 'string' || !/(?:Z|[+-]\d{2}:\d{2})$/.test(peer.enabledSince) || !Number.isFinite(Date.parse(peer.enabledSince))
+      || peer.ownerId === peer.actorId || peers.has(peer.account)) throw new Error('invalid or duplicate config.manager.directPeers account');
+    const account = cfg.accounts.find(a => a.name === peer.account);
+    if (account.ownerChat && account.ownerChat !== peer.ownerId && `${account.ownerChat}@s.whatsapp.net` !== peer.ownerId) {
+      throw new Error('manager direct peer owner must match account.ownerChat');
+    }
+    peers.add(peer.account);
+    return { account: peer.account, ownerId: peer.ownerId, actorId: peer.actorId, enabledSince: peer.enabledSince };
+  });
+
   // Delimiters such as '-' make a longer name match the shorter name's grammar.
   if (manager.enabled && cfg.triggers.some(n => manager.triggers.some(m =>
     buildTriggerRegex([n]).test(`@${m}`) || buildTriggerRegex([m]).test(`@${n.trim().replace(/^@/, '')}`)))) {

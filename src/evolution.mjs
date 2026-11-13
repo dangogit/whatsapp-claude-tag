@@ -34,6 +34,37 @@ export class EvolutionClient {
     return records.slice(0, limit);
   }
 
+  // Strict metadata is required for an exhaustive conversation import. The
+  // ordinary preview reader deliberately retains its older permissive contract.
+  async findMessagePage(instance, where = {}, limit = 100, page = 1) {
+    const data = await this.request('POST', `/chat/findMessages/${enc(instance)}`, { where, page, offset: limit });
+    const value = data?.messages;
+    if (!value || !Array.isArray(value.records) || !Number.isSafeInteger(value.total) || value.total < 0
+      || !Number.isSafeInteger(value.pages) || value.pages !== Math.ceil(value.total / limit)
+      || value.currentPage !== page || value.records.length !== Math.min(limit, Math.max(0, value.total - (page - 1) * limit))) {
+      throw new Error('invalid Evolution history pagination');
+    }
+    return { records: value.records, total: value.total, pages: value.pages, currentPage: value.currentPage };
+  }
+
+  async peerJids(instance, actorId) {
+    const aliases = new Set();
+    let total;
+    for (let page = 1; page <= 1000; page++) {
+      const result = await this.findMessagePage(instance, { key: { fromMe: false, remoteJidAlt: actorId } }, 100, page);
+      if (total !== undefined && total !== result.total) throw new Error('peer identity history changed during read');
+      total = result.total;
+      for (const rec of result.records) {
+        const key = rec?.key;
+        if (typeof key?.fromMe !== 'boolean' || key.remoteJidAlt !== actorId || key.participant || key.participantAlt
+          || !/^\d+@lid$/.test(key.remoteJid)) throw new Error('unverified peer alias');
+        aliases.add(key.remoteJid);
+      }
+      if (page >= result.pages) return [...aliases];
+    }
+    throw new Error('peer identity history page limit exceeded');
+  }
+
   async findContacts(instance) {
     const data = await this.request('POST', `/chat/findContacts/${enc(instance)}`, { where: {} });
     return Array.isArray(data) ? data : [];

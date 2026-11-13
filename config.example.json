@@ -21,6 +21,7 @@
   "manager": {
     "enabled": false,
     "deliveries": false,
+    "directPeers": [],
     "triggers": ["manager"],
     "command": "",
     "args": [],

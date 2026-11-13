@@ -12,7 +12,7 @@ import { acquireLock } from './store.mjs';
 import { baileysAccounts, rpcSocketPath } from './transport.mjs';
 import { ManagerDeliveryStore } from './manager-delivery-store.mjs';
 import { managerDeliveryHealth } from './manager-deliveries.mjs';
-import { managerUserJid } from './manager.mjs';
+import { managerUserJid, managerScopeConfigured } from './manager.mjs';
 
 function log(level, fields) {
   process.stdout.write(`${JSON.stringify({ t: new Date().toISOString(), level, ...fields })}\n`);
@@ -73,12 +73,17 @@ async function check(cfg) {
     if (cfg.manager.enabled && cfg.manager.deliveries) {
       try {
         const actorId = managerUserJid(await client.ownerJid(account.instance));
-        const scope = { account: { name: account.name, instance: account.instance }, actorId, destination: actorId };
-        const verify = async () => Boolean(actorId) && (!account.ownerChat || managerUserJid(account.ownerChat) === actorId)
-          && managerUserJid(await client.ownerJid(account.instance)) === actorId;
-        const health = await managerDeliveryHealth(cfg, deliveryStore, scope, verify);
-        failed ||= !health.ok;
-        console.log(`${health.ok ? 'ok  ' : 'FAIL'} ${account.name}: manager deliveries localUnknown=${health.localUnknown} remoteUnknown=${health.remoteUnknown} pendingAcks=${health.pendingAcks} corrupt=${health.corrupt} available=${health.available}`);
+        const peer = cfg.manager.directPeers?.find(p => p.account === account.name);
+        const scopes = [{ account: { name: account.name, instance: account.instance }, actorId, destination: actorId },
+          ...(peer ? [{ route: 'direct', ownerId: peer.ownerId, enabledSince: peer.enabledSince, actorId: peer.actorId, destination: peer.actorId,
+            account: { name: account.name, instance: account.instance } }] : [])];
+        for (const scope of scopes) {
+          const verify = async () => managerScopeConfigured(cfg, scope)
+            && managerUserJid(await client.ownerJid(account.instance)) === (scope.ownerId || scope.actorId);
+          const health = await managerDeliveryHealth(cfg, deliveryStore, scope, verify);
+          failed ||= !health.ok;
+          console.log(`${health.ok ? 'ok  ' : 'FAIL'} ${account.name}: manager ${scope.route || 'self'} deliveries localUnknown=${health.localUnknown} remoteUnknown=${health.remoteUnknown} pendingAcks=${health.pendingAcks} corrupt=${health.corrupt} available=${health.available}`);
+        }
       } catch {
         failed = true;
         console.log(`FAIL ${account.name}: manager delivery health unavailable`);
