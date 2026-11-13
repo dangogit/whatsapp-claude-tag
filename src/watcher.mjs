@@ -10,8 +10,8 @@ import { buildDirectory } from './directory.mjs';
 import { confirmedTargets, sameUser } from './policy.mjs';
 import { appendAction, readActions, writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
-import { approvalAnswer, buildTriggerRegex, defuseTrigger, parseTrigger, parseVoiceTrigger } from './trigger.mjs';
-import { managerTrigger, managerUserJid } from './manager.mjs';
+import { approvalAnswer, buildTriggerMatcher, canonicalTriggerName, defuseTrigger, parseVoiceTrigger } from './trigger.mjs';
+import { managerEnvelope, managerTrigger, managerUserJid } from './manager.mjs';
 import { mediaKind, ownVoiceNote, quotedMediaKind, saveMedia, transcribe } from './media.mjs';
 import { NOT_DONE } from './runner.mjs';
 import { isGroupJid, messageText, quotedId, quotedText, timestampOf, userPart } from './text.mjs';
@@ -31,7 +31,8 @@ export class AccountWatcher {
     this.queue = Promise.resolve();
     this.pendingJobs = 0;
     this.namesPromise = null;
-    this.managerRegex = this.cfg.manager?.enabled ? buildTriggerRegex(this.cfg.manager.triggers) : null;
+    this.matchClaude = buildTriggerMatcher(this.cfg.triggers, 'claude');
+    this.matchManager = this.cfg.manager?.enabled ? buildTriggerMatcher(this.cfg.manager.triggers, 'manager') : () => null;
   }
 
   async init() {
@@ -74,6 +75,33 @@ export class AccountWatcher {
 
   isManagerOwnerChat(key) {
     return key.fromMe === true && Boolean(this.managerOwnerChat) && this.managerOwnerJids.includes(managerUserJid(key.remoteJid));
+  }
+
+  managerScope() {
+    return { actorId: this.managerOwnerChat, destination: this.managerOwnerChat,
+      account: { name: this.account.name, instance: this.account.instance } };
+  }
+
+  managerScopeMatches(scope) {
+    const actor = managerUserJid(scope?.actorId);
+    const account = this.cfg.accounts.find(a => a.name === scope?.account?.name && a.instance === scope?.account?.instance);
+    return this.cfg.manager?.enabled === true && Boolean(actor) && actor === this.managerOwnerChat
+      && managerUserJid(scope.destination) === actor && managerUserJid(this.ownerChat) === actor
+      && Boolean(account) && account.name === this.account.name && account.instance === this.account.instance
+      && (!account.ownerChat || managerUserJid(account.ownerChat) === actor);
+  }
+
+  async managerIdentityMatches(scope) {
+    if (!this.managerScopeMatches(scope)) return false;
+    try {
+      const connectedOwner = await this.client.ownerJid(scope.account.instance);
+      return managerUserJid(connectedOwner) === managerUserJid(scope.actorId) && this.managerScopeMatches(scope);
+    } catch { return false; }
+  }
+
+  async managerJobAllowed(job) {
+    try { managerEnvelope(this.cfg, job); } catch { return false; }
+    return this.managerIdentityMatches({ account: job.account, actorId: job.authenticatedOwnerChat, destination: job.ownerChat });
   }
 
   // Newest own messages, paging back while a page still holds unseen messages inside
@@ -124,7 +152,7 @@ export class AccountWatcher {
   async reportInterrupted() {
     for (const { job, dir } of this.store.unfinishedJobs(INTERRUPTED_MAX_AGE_MS)) {
       this.store.markAbandoned(dir);
-      await this.notifyOwner(t(this.cfg.language, 'interrupted', { request: job.trigger.request.slice(0, 120) }));
+      await this.notifyForJob(job, t(this.cfg.language, 'interrupted', { request: job.trigger.request.slice(0, 120) }));
       this.log('warn', { account: this.account.name, event: 'run-interrupted', job: job.id });
     }
   }
@@ -159,16 +187,17 @@ export class AccountWatcher {
         return;
       }
     }
-    const trig = parseTrigger(text, this.regex) || (this.managerRegex && parseTrigger(text, this.managerRegex));
+    const trig = this.matchClaude(text) || this.matchManager(text);
     // A swipe-reply to something a run sent continues that run's conversation. In the
     // owner's own chat no "@claude" is needed; anywhere else it still is, because there
     // the owner may simply be quoting the message while talking to people.
     const thread = qid ? this.store.getThread(qid) : null;
-    const backend = trig ? (managerTrigger(this.cfg, trig.name) ? 'manager' : 'claude') : thread?.backend || 'claude';
+    const backend = trig?.backend || thread?.backend || 'claude';
+    if (!['manager', 'claude'].includes(backend)) return;
     if (backend === 'manager' && (!this.cfg.manager?.enabled || !this.isManagerOwnerChat(rec.key))) return;
     if (thread && text.trim() && (trig || this.isOwnerChat(rec.key))) {
       const compatible = backend === (thread.backend || 'claude') && (backend === 'manager'
-        ? thread.actorId === this.managerOwnerChat && managerTrigger(this.cfg, thread.triggerName)
+        ? this.managerScopeMatches(thread.managerScope) && thread.actorId === thread.managerScope.actorId && managerTrigger(this.cfg, thread.triggerName)
         : !managerTrigger(this.cfg, thread.triggerName));
       if (!compatible) {
         if (trig) this.enqueue(rec, { ...trig, omitQuoted: true });
@@ -177,14 +206,14 @@ export class AccountWatcher {
       // "yes" to a message of the run that named a person or an address makes that message
       // part of what the owner authorised: the same check that lets "send it to Dana" through.
       const approved = backend === 'claude' && approvalAnswer(text) === 'yes' ? confirmedTargets(quotedText(rec)) : '';
-      this.enqueue(rec, { name: trig?.name || thread.triggerName || this.cfg.triggers[0], request: trig ? trig.request : text.trim() }, { ...thread, approved });
+      this.enqueue(rec, { backend, name: trig?.name || thread.triggerName || this.cfg.triggers[0], request: trig ? trig.request : text.trim() }, { ...thread, approved });
       return;
     }
     if (!trig) {
       // A voice note the owner sends to their own chat is a request when it starts with the
       // assistant's name ("Claude, ..."). It is transcribed in the run queue, not in the poll.
       if (this.cfg.media.voiceCommands && this.cfg.media.whisperModel && ownVoiceNote(rec) && this.isOwnerChat(rec.key)) {
-        this.enqueue(rec, { name: this.cfg.triggers[0], request: '', voice: true });
+        this.enqueue(rec, { backend: 'claude', name: this.cfg.triggers[0], request: '', voice: true });
       }
       return;
     }
@@ -225,8 +254,21 @@ export class AccountWatcher {
   }
 
   async notifyOwner(text) {
+    return this.sendNotification(text, this.account.instance, this.ownerChat);
+  }
+
+  async notifyForJob(job, text) {
+    if (!job.backend || job.backend === 'claude') return this.notifyOwner(text);
+    if (job.backend !== 'manager' || !await this.managerJobAllowed(job)) {
+      this.log('warn', { account: this.account.name, event: 'manager-notification-refused', job: job.id });
+      return '';
+    }
+    return this.sendNotification(text, job.account.instance, job.ownerChat);
+  }
+
+  async sendNotification(text, instance, destination) {
     try {
-      const key = await this.client.sendText(this.account.instance, this.ownerChat, defuseTrigger(text));
+      const key = await this.client.sendText(instance, destination, defuseTrigger(text));
       this.store.recordSent(key.id);
       return key.id || '';
     } catch (err) {
@@ -236,6 +278,9 @@ export class AccountWatcher {
   }
 
   enqueue(rec, trig, thread = null) {
+    // The queue must retain the identity that accepted the request, even if init
+    // runs again or account configuration changes before this job gets its turn.
+    if (trig.backend === 'manager') trig = { ...trig, managerScope: this.managerScope() };
     this.pendingJobs += 1;
     this.queue = this.queue
       .then(() => this.runOne(rec, trig, thread))
@@ -257,29 +302,34 @@ export class AccountWatcher {
   async buildJob(rec, trig, thread = null) {
     const key = rec.key;
     if (key?.fromMe !== true) throw new Error('only owner-sent messages can become jobs');
-    const backend = managerTrigger(this.cfg, trig.name) ? 'manager' : 'claude';
+    const backend = trig.backend;
+    if (!['manager', 'claude'].includes(backend)
+      || (backend === 'claude' && managerTrigger(this.cfg, trig.name))) throw new Error('invalid trigger backend');
     if (thread && (thread.backend || 'claude') !== backend) thread = null;
     const alt = key.remoteJidAlt || '';
     const isGroup = isGroupJid(key.remoteJid);
     const isOwnerChat = !isGroup && this.isOwnerChat(key);
-    if (backend === 'manager' && !this.isManagerOwnerChat(key)) throw new Error('manager requests require the owner self-chat');
+    if (backend === 'manager' && (!this.isManagerOwnerChat(key) || !this.managerScopeMatches(trig.managerScope)
+      || !managerTrigger(this.cfg, trig.name))) throw new Error('manager requests require the owner self-chat');
+    if (backend === 'manager' && thread && (!this.managerScopeMatches(thread.managerScope)
+      || thread.actorId !== thread.managerScope.actorId)) thread = null;
     let names = new Map();
     try { names = await this.getNames(); } catch { /* names are cosmetic here */ }
     const name = isOwnerChat ? 'owner'
       : names.get(key.remoteJid) || names.get(alt) || (isGroup ? key.remoteJid : `+${userPart(alt || key.remoteJid)}`);
-    const sendTo = isGroup ? key.remoteJid
+    const sendTo = backend === 'manager' ? trig.managerScope.destination : isGroup ? key.remoteJid
       : isOwnerChat ? this.ownerChat
         : alt.endsWith('@s.whatsapp.net') ? alt : key.remoteJid;
     const nowDate = new Date(this.now());
     return {
       id: key.id,
       backend,
-      triggerName: trig.name,
-      account: { name: this.account.name, instance: this.account.instance },
+      triggerName: canonicalTriggerName(trig.name, backend === 'manager' ? this.cfg.manager.triggers : this.cfg.triggers) || trig.name,
+      account: backend === 'manager' ? { ...trig.managerScope.account } : { name: this.account.name, instance: this.account.instance },
       chat: { jid: key.remoteJid, alt, name, isGroup, isOwnerChat, sendTo },
-      ownerChat: backend === 'manager' ? this.managerOwnerChat : this.ownerChat,
-      ownerJids: backend === 'manager' ? this.managerOwnerJids : this.ownerJids,
-      ...(backend === 'manager' ? { authenticatedOwnerChat: this.managerOwnerChat } : {}),
+      ownerChat: backend === 'manager' ? trig.managerScope.destination : this.ownerChat,
+      ownerJids: backend === 'manager' ? [...this.managerOwnerJids] : this.ownerJids,
+      ...(backend === 'manager' ? { authenticatedOwnerChat: trig.managerScope.actorId } : {}),
       trigger: {
         key: { id: key.id, remoteJid: key.remoteJid, fromMe: true, ...(key.participant ? { participant: key.participant } : {}) },
         request: trig.request,
@@ -295,7 +345,7 @@ export class AccountWatcher {
         voice: Boolean(trig.voice),
       },
       resumeSessionId: backend === 'claude' ? this.sessionFor(thread) : '',
-      ...(backend === 'manager' ? { resumeConversationId: thread?.actorId === this.managerOwnerChat ? thread.conversationId || '' : '' } : {}),
+      ...(backend === 'manager' ? { resumeConversationId: thread?.conversationId || '' } : {}),
       replyPrefix: this.cfg.replyPrefix,
       language: this.cfg.language,
       timezone: this.cfg.timezone,
@@ -315,6 +365,10 @@ export class AccountWatcher {
       trig = { ...trig, request: heard.request };
     }
     const job = await this.buildJob(rec, trig, thread);
+    if (job.backend === 'manager' && !await this.managerJobAllowed(job)) {
+      this.log('warn', { account: this.account.name, event: 'manager-job-refused', job: job.id });
+      return;
+    }
     const jobDir = this.store.jobDir(job.id);
     writeJsonAtomic(path.join(jobDir, 'job.json'), job);
     const base = {
@@ -335,16 +389,20 @@ export class AccountWatcher {
     const toldOwner = actions.some(a => a.type === 'send' && this.ownerJids.some(o => sameUser(o, a.to)));
     const finalLine = notDone ? `⚠️ ${res.result.slice(NOT_DONE.length).trim()}` : res.result;
     if (!res.ok) {
-      await this.notifyOwner(t(this.cfg.language, 'failed', { name: job.triggerName, error: res.error || 'unknown error' }));
+      await this.notifyForJob(job, t(this.cfg.language, 'failed', { name: job.triggerName, error: res.error || 'unknown error' }));
     } else if ((!delivered || (notDone && !toldOwner)) && finalLine) {
-      replyIds.push(await this.notifyOwner(finalLine));
-      appendAction(jobDir, { type: notDone ? 'not-done-to-owner' : 'fallback-to-owner' });
+      const replyId = await this.notifyForJob(job, finalLine);
+      if (replyId) {
+        replyIds.push(replyId);
+        appendAction(jobDir, { type: notDone ? 'not-done-to-owner' : 'fallback-to-owner' });
+      }
     }
     if (res.ok && (job.backend === 'manager' ? res.conversationId : res.sessionId)) {
       for (const id of replyIds.filter(Boolean)) {
         this.store.linkThread(id, job.backend === 'manager' ? {
           backend: 'manager', jobId: job.id, triggerName: job.triggerName,
-          actorId: job.ownerChat, conversationId: res.conversationId, taskIds: res.taskIds,
+          actorId: job.authenticatedOwnerChat, conversationId: res.conversationId, taskIds: res.taskIds,
+          managerScope: { account: job.account, actorId: job.authenticatedOwnerChat, destination: job.ownerChat },
         } : {
           backend: 'claude',
           jobId: job.id, sessionId: res.sessionId, triggerName: job.triggerName,

@@ -6,6 +6,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
+import { canonicalTriggerName } from './trigger.mjs';
 
 const MAX_OUTPUT = 64 * 1024;
 const ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,255}$/;
@@ -18,7 +19,7 @@ export function managerUserJid(value) {
 }
 
 export function managerTrigger(cfg, name) {
-  return cfg.manager?.enabled === true && cfg.manager.triggers.includes(String(name).replace(/^@/, '').toLowerCase());
+  return cfg.manager?.enabled === true && Boolean(canonicalTriggerName(name, cfg.manager.triggers));
 }
 
 export function managerEnvelope(cfg, job) {
@@ -27,7 +28,7 @@ export function managerEnvelope(cfg, job) {
   const account = cfg.accounts.find(a => a.name === job.account?.name && a.instance === job.account?.instance);
   if (!managerTrigger(cfg, job.triggerName) || job.backend !== 'manager' || key?.fromMe !== true
     || !job.chat?.isOwnerChat || job.chat.isGroup || !USER_JID.test(key.remoteJid)
-    || !owner || managerUserJid(job.ownerChat) !== owner
+    || !owner || managerUserJid(job.ownerChat) !== owner || managerUserJid(job.chat.sendTo) !== owner
     || ![owner, ...(job.ownerJids || [])].some(j => managerUserJid(j) === managerUserJid(key.remoteJid))
     || !account || (account.ownerChat && managerUserJid(account.ownerChat) !== owner)
     || key.id !== job.id || typeof job.id !== 'string' || !job.id

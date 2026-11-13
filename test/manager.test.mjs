@@ -14,7 +14,7 @@ const JOB = {
   id: 'J1', backend: 'manager', triggerName: 'manager',
   account: { name: 'personal', instance: 'inst' }, ownerChat: OWNER, ownerJids: [OWNER],
   authenticatedOwnerChat: OWNER,
-  chat: { isOwnerChat: true, isGroup: false },
+  chat: { isOwnerChat: true, isGroup: false, sendTo: OWNER },
   trigger: { key: { id: 'J1', fromMe: true, remoteJid: OWNER }, request: 'בדוק את המשימה', quoted: 'untrusted' },
 };
 const RESPONSE = { ok: true, reply: 'קיבלתי', conversationId: 'conversation-1', taskIds: ['task-1'] };
@@ -65,6 +65,8 @@ test('direct manager invocation refuses non-owner jobs and disabled backend befo
   const jobs = [
     { ...JOB, backend: 'claude' }, { ...JOB, triggerName: 'claude' },
     { ...JOB, authenticatedOwnerChat: undefined }, { ...JOB, authenticatedOwnerChat: '999@s.whatsapp.net' },
+    { ...JOB, chat: { ...JOB.chat, sendTo: '999@s.whatsapp.net' } },
+    { ...JOB, chat: { ...JOB.chat, sendTo: undefined } },
     { ...JOB, trigger: { ...JOB.trigger, key: { ...JOB.trigger.key, fromMe: false } } },
     { ...JOB, trigger: { ...JOB.trigger, key: { ...JOB.trigger.key, remoteJid: '999@s.whatsapp.net' } } },
     { ...JOB, trigger: { ...JOB.trigger, key: { ...JOB.trigger.key, remoteJid: '972500000001@g.us' } } },
