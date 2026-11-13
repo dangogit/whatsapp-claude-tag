@@ -66,7 +66,7 @@ export class ManagerDeliveryStore {
     const scope = managerJobScope(job);
     const file = this.requestFile(scope, job.id);
     const existing = read(file);
-    const digest = hash(envelope.body);
+    const digest = hash(envelope.attachments ? [envelope.body, envelope.attachments] : envelope.body);
     if (existing) {
       this.validateRequest(existing);
       if (!sameScope(existing.scope, scope) || existing.messageId !== job.id || existing.requestHash !== digest

@@ -3,6 +3,7 @@
 import { managerControlEnvelope, runManagerConversationSync, managerUserJid } from './manager.mjs';
 import { messageText, quotedId, timestampOf } from './text.mjs';
 import { mediaKind } from './media.mjs';
+import { managerMediaIdentity } from './manager-media.mjs';
 
 const ENTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
 const DATABASE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -46,10 +47,19 @@ export function peerKeyMatches(key, actorId, aliases = []) {
   return allowed.includes(remote) && (!alt || allowed.includes(alt));
 }
 
-export async function readManagerHistory(client, instance, scope, aliases, current) {
+export function authenticatedPeerJids(key, actorId, aliases = []) {
+  if (!peerKeyMatches(key, actorId, aliases)) throw new Error('manager peer key crossed scope');
+  // The same verified provider key proves either PN/LID orientation, even when
+  // a refreshed historical alias query has not indexed that binding yet.
+  return [...new Set([...aliases, managerUserJid(key.remoteJid), managerUserJid(key.remoteJidAlt)]
+    .filter(jid => /^\d+@lid$/.test(jid)))].sort();
+}
+
+export async function readManagerHistory(client, instance, scope, aliases, current, selectedRecords) {
   if (typeof client.findMessagePage !== 'function') throw new Error('complete manager history unavailable');
   const streams = [];
   const seen = new Map();
+  const originals = new Map();
   const observations = new Map(), databaseRows = new Map();
   const activation = Date.parse(scope.enabledSince);
   for (const jid of [...new Set([scope.actorId, ...aliases])]) {
@@ -72,6 +82,8 @@ export async function readManagerHistory(client, instance, scope, aliases, curre
           throw new Error('manager history crossed chat scope');
         }
         const entry = managerEntry(rec);
+        if (originals.has(entry.id) && managerMediaIdentity(originals.get(entry.id)) !== managerMediaIdentity(rec)) throw new Error('conflicting manager history media');
+        if (!originals.has(entry.id)) originals.set(entry.id, rec);
         const databaseId = typeof rec.id === 'string' && DATABASE_ID.test(rec.id) ? rec.id : null;
         if (databaseId && streamDatabaseIds.has(databaseId)) throw new Error('duplicate manager history page record');
         const databaseEntry = databaseId && databaseRows.get(databaseId);
@@ -108,6 +120,7 @@ export async function readManagerHistory(client, instance, scope, aliases, curre
   }
   const currentEntry = managerEntry(current);
   if (JSON.stringify(seen.get(currentEntry.id)) !== JSON.stringify(currentEntry)) throw new Error('current message missing from manager history');
+  if (managerMediaIdentity(originals.get(currentEntry.id)) !== managerMediaIdentity(current)) throw new Error('current manager media changed');
   const cutoff = timestampOf(current);
   const before = new Map(), after = new Map();
   for (const id of seen.keys()) { before.set(id, new Set()); after.set(id, new Set()); }
@@ -146,6 +159,10 @@ export async function readManagerHistory(client, instance, scope, aliases, curre
   if (order.size !== seen.size) throw new Error('inconsistent provider history order');
   const entries = [...accepted.values()].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || order.get(a.id) - order.get(b.id));
   if (entries.at(-1)?.id !== currentEntry.id) throw new Error('unproven history boundary');
+  // Only the explicitly current/quoted records are eligible for preparation.
+  // Old history is never downloaded or transcribed as a side effect of import.
+  if (selectedRecords) await selectedRecords([current, ...(accepted.has(quotedId(current)) && quotedId(current) !== currentEntry.id
+    ? [originals.get(quotedId(current))] : [])]);
   return entries;
 }
 

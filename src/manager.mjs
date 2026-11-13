@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import { writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
 import { canonicalTriggerName } from './trigger.mjs';
+import { managerAttachmentsValid } from './manager-media.mjs';
+import { quotedId } from './text.mjs';
 
 const MAX_OUTPUT = 64 * 1024;
 const ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,255}$/;
@@ -91,6 +93,8 @@ export function managerTrigger(cfg, name) {
 
 export function managerEnvelope(cfg, job) {
   const key = job.trigger?.key;
+  if (job.attachments !== undefined && (job.managerScope?.route !== 'direct' || !managerAttachmentsValid(job.attachments, job.id)
+    || !job.attachments.items.every(item => [job.id, quotedId(job.directRecord)].includes(item.messageId)))) throw new Error('managerRefused');
   if (job.managerScope?.route === 'direct') {
     const scope = job.managerScope;
     const aliases = job.authenticatedPeerJids || [];
@@ -108,7 +112,8 @@ export function managerEnvelope(cfg, job) {
       || key.id !== job.id || !validId(job.id) || typeof job.trigger.request !== 'string' || !job.trigger.request.trim()
       || Buffer.byteLength(job.trigger.request) > 32768) throw new Error('managerRefused');
     return { schemaVersion: 1, source: 'whatsapp', account: scope.account.name, actorId: scope.actorId, messageId: job.id,
-      conversationId: managerConversationId(scope.account.name, scope.actorId), body: job.trigger.request };
+      conversationId: managerConversationId(scope.account.name, scope.actorId), body: job.trigger.request,
+      ...(job.attachments ? { attachments: job.attachments } : {}) };
   }
   const owner = managerUserJid(job.authenticatedOwnerChat);
   const account = cfg.accounts.find(a => a.name === job.account?.name && a.instance === job.account?.instance);

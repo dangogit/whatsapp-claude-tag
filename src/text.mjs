@@ -46,10 +46,16 @@ export function messageText(rec) {
 
 // Evolution flattens contextInfo onto the record; older payloads keep it on the message.
 function contextInfo(rec) {
-  return rec?.contextInfo
-    || rec?.message?.extendedTextMessage?.contextInfo
-    || rec?.message?.imageMessage?.contextInfo
-    || null;
+  if (rec?.contextInfo) return rec.contextInfo;
+  let message = rec?.message || {};
+  for (let depth = 0; depth < 8; depth++) {
+    for (const key of ['extendedTextMessage', 'imageMessage', 'audioMessage', 'documentMessage', 'videoMessage']) {
+      if (message[key]?.contextInfo) return message[key].contextInfo;
+    }
+    message = ['ephemeralMessage', 'viewOnceMessage', 'viewOnceMessageV2'].map(key => message[key]?.message).find(Boolean);
+    if (!message) break;
+  }
+  return null;
 }
 
 export function quotedText(rec) {
