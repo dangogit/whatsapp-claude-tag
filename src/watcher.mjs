@@ -11,7 +11,7 @@ import { confirmedTargets, sameUser } from './policy.mjs';
 import { appendAction, readActions, writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
 import { approvalAnswer, buildTriggerRegex, defuseTrigger, parseTrigger, parseVoiceTrigger } from './trigger.mjs';
-import { managerTrigger } from './manager.mjs';
+import { managerTrigger, managerUserJid } from './manager.mjs';
 import { mediaKind, ownVoiceNote, quotedMediaKind, saveMedia, transcribe } from './media.mjs';
 import { NOT_DONE } from './runner.mjs';
 import { isGroupJid, messageText, quotedId, quotedText, timestampOf, userPart } from './text.mjs';
@@ -35,10 +35,22 @@ export class AccountWatcher {
   }
 
   async init() {
-    const ownerJid = this.account.ownerChat || await this.client.ownerJid(this.account.instance);
+    let connectedOwner = '';
+    if (!this.account.ownerChat || this.cfg.manager?.enabled) {
+      try { connectedOwner = await this.client.ownerJid(this.account.instance); }
+      catch (err) { if (!this.account.ownerChat) throw err; }
+    }
+    const ownerJid = this.account.ownerChat || connectedOwner;
     if (!ownerJid) throw new Error(`cannot tell the owner number of instance ${this.account.instance}`);
     this.ownerChat = ownerJid.includes('@') ? ownerJid : `${ownerJid}@s.whatsapp.net`;
     this.ownerJids = [this.ownerChat, ...this.store.ownerJids().filter(j => j !== this.ownerChat && j.endsWith('@lid'))];
+    // ownerChat is a reply target override. Manager identity comes from the transport.
+    const authenticatedOwner = managerUserJid(connectedOwner);
+    this.managerOwnerChat = this.cfg.manager?.enabled && authenticatedOwner === managerUserJid(this.ownerChat) ? authenticatedOwner : '';
+    this.managerOwnerJids = this.managerOwnerChat ? [this.managerOwnerChat] : [];
+    if (this.cfg.manager?.enabled && !this.managerOwnerChat) {
+      this.log('warn', { account: this.account.name, event: 'manager-owner-unverified' });
+    }
     this.startedAt = Math.floor(this.now() / 1000);
     // Learn the self-chat LID from recent history now, not at the next self-chat message.
     try {
@@ -58,6 +70,10 @@ export class AccountWatcher {
 
   isOwnerChat(key) {
     return this.ownerJids.some(o => sameUser(o, key.remoteJid) || sameUser(o, key.remoteJidAlt));
+  }
+
+  isManagerOwnerChat(key) {
+    return key.fromMe === true && Boolean(this.managerOwnerChat) && this.managerOwnerJids.includes(managerUserJid(key.remoteJid));
   }
 
   // Newest own messages, paging back while a page still holds unseen messages inside
@@ -117,6 +133,12 @@ export class AccountWatcher {
   // JID only as remoteJidAlt. Learn that LID so it counts as the owner chat everywhere.
   learnOwnerLid(key) {
     const lid = key.remoteJid || '';
+    // Never reuse the reply-target alias cache as proof of the connected identity.
+    const managerLid = managerUserJid(lid);
+    if (key.fromMe === true && this.managerOwnerChat && managerLid.endsWith('@lid')
+      && managerUserJid(key.remoteJidAlt) === this.managerOwnerChat && !this.managerOwnerJids.includes(managerLid)) {
+      this.managerOwnerJids.push(managerLid);
+    }
     if (key.fromMe === true && lid.endsWith('@lid') && key.remoteJidAlt && sameUser(key.remoteJidAlt, this.ownerChat)
       && !this.ownerJids.includes(lid)) {
       this.ownerJids.push(lid);
@@ -143,10 +165,10 @@ export class AccountWatcher {
     // the owner may simply be quoting the message while talking to people.
     const thread = qid ? this.store.getThread(qid) : null;
     const backend = trig ? (managerTrigger(this.cfg, trig.name) ? 'manager' : 'claude') : thread?.backend || 'claude';
-    if (backend === 'manager' && (!this.cfg.manager?.enabled || isGroupJid(rec.key.remoteJid) || !this.isOwnerChat(rec.key))) return;
+    if (backend === 'manager' && (!this.cfg.manager?.enabled || !this.isManagerOwnerChat(rec.key))) return;
     if (thread && text.trim() && (trig || this.isOwnerChat(rec.key))) {
       const compatible = backend === (thread.backend || 'claude') && (backend === 'manager'
-        ? thread.actorId === this.ownerChat && managerTrigger(this.cfg, thread.triggerName)
+        ? thread.actorId === this.managerOwnerChat && managerTrigger(this.cfg, thread.triggerName)
         : !managerTrigger(this.cfg, thread.triggerName));
       if (!compatible) {
         if (trig) this.enqueue(rec, { ...trig, omitQuoted: true });
@@ -240,7 +262,7 @@ export class AccountWatcher {
     const alt = key.remoteJidAlt || '';
     const isGroup = isGroupJid(key.remoteJid);
     const isOwnerChat = !isGroup && this.isOwnerChat(key);
-    if (backend === 'manager' && !isOwnerChat) throw new Error('manager requests require the owner self-chat');
+    if (backend === 'manager' && !this.isManagerOwnerChat(key)) throw new Error('manager requests require the owner self-chat');
     let names = new Map();
     try { names = await this.getNames(); } catch { /* names are cosmetic here */ }
     const name = isOwnerChat ? 'owner'
@@ -255,8 +277,9 @@ export class AccountWatcher {
       triggerName: trig.name,
       account: { name: this.account.name, instance: this.account.instance },
       chat: { jid: key.remoteJid, alt, name, isGroup, isOwnerChat, sendTo },
-      ownerChat: this.ownerChat,
-      ownerJids: this.ownerJids,
+      ownerChat: backend === 'manager' ? this.managerOwnerChat : this.ownerChat,
+      ownerJids: backend === 'manager' ? this.managerOwnerJids : this.ownerJids,
+      ...(backend === 'manager' ? { authenticatedOwnerChat: this.managerOwnerChat } : {}),
       trigger: {
         key: { id: key.id, remoteJid: key.remoteJid, fromMe: true, ...(key.participant ? { participant: key.participant } : {}) },
         request: trig.request,
@@ -272,7 +295,7 @@ export class AccountWatcher {
         voice: Boolean(trig.voice),
       },
       resumeSessionId: backend === 'claude' ? this.sessionFor(thread) : '',
-      ...(backend === 'manager' ? { resumeConversationId: thread?.actorId === this.ownerChat ? thread.conversationId || '' : '' } : {}),
+      ...(backend === 'manager' ? { resumeConversationId: thread?.actorId === this.managerOwnerChat ? thread.conversationId || '' : '' } : {}),
       replyPrefix: this.cfg.replyPrefix,
       language: this.cfg.language,
       timezone: this.cfg.timezone,

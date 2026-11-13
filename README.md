@@ -215,7 +215,9 @@ You can route a separate tag to a trusted local CLI. This is off by default. `@c
 }
 ```
 
-Set `command` and `args` for an adapter you trust before enabling it. The command must be an absolute path. Arguments are passed literally with no shell, and requests travel through stdin. Manager trigger names cannot overlap the Claude names while enabled. This adapter runs as your OS user; it is not a sandbox.
+Set `command` and `args` for an adapter you trust before enabling it. The command must be an absolute path. Arguments are passed literally with no shell, and requests travel through stdin. Manager trigger names cannot overlap the Claude trigger grammar while enabled: for example, `claude-manager` conflicts with `claude` because a hyphen ends a tag. This adapter runs as your OS user; it is not a sandbox.
+
+The manager verifies the connected account's identity through the WhatsApp transport. If `accounts.ownerChat` points to another account, or the connected identity cannot be verified, manager requests are refused. Claude keeps its existing reply-target override. Manager LID aliases must be linked to the connected owner by transport records; the saved Claude reply-target aliases are not used as identity proof.
 
 The adapter reads one JSON object from stdin:
 
@@ -231,7 +233,7 @@ The adapter reads one JSON object from stdin:
 }
 ```
 
-The watcher derives the identity fields from its own owner-sent job. Text inside `body` cannot override them. A new request uses `whatsapp:` followed by the SHA-256 of `JSON.stringify([account, ownerChat])`; a swipe-reply uses the conversation ID saved with that manager answer. The adapter must enforce its own actor permissions and deduplicate requests by account, actor and message ID.
+The watcher derives the identity fields from its own owner-sent job and the verified connected account. Text inside `body` cannot override them. A new request uses `whatsapp:` followed by the SHA-256 of `JSON.stringify([account, ownerChat])`, where `ownerChat` is the verified account JID without a device suffix; a swipe-reply uses the conversation ID saved with that manager answer. The adapter must enforce its own actor permissions and deduplicate requests by account, actor and message ID.
 
 On success, exit with code zero and write only this response shape to stdout:
 

@@ -14,11 +14,10 @@ const NOW = 1_800_000_000_000;
 const RESPONSE = { ok: true, result: 'accepted', conversationId: 'conversation-1', taskIds: ['task-1'] };
 const record = (id, text, extra = {}) => msg({ id, chat: OWNER, text, ts: NOW / 1000 - 1, ...extra });
 
-async function watcher(extra = {}, executor) {
+async function watcher(extra = {}, executor, client = new FakeClient()) {
   const cfg = normalizeConfig({ accounts: [{ name: 'personal', instance: 'inst' }], stateDir: tmpDir(),
     manager: { enabled: true, command: process.execPath }, ...extra }, { EVOLUTION_API_KEY: 'k' });
   const store = new AccountStore(cfg.stateDir, 'personal');
-  const client = new FakeClient();
   const jobs = [];
   const w = new AccountWatcher({ cfg, account: cfg.accounts[0], client, store, regex: buildTriggerRegex(cfg.triggers), now: () => NOW,
     runJob: async (c, job, dir) => { jobs.push(job); return executor ? executor(c, job, dir) : job.backend === 'manager' ? RESPONSE : { ok: true, result: 'claude', sessionId: 'claude-session' }; } });
@@ -26,6 +25,50 @@ async function watcher(extra = {}, executor) {
   return { w, cfg, client, store, jobs };
 }
 async function handle(w, rec) { await w.handle(rec); await w.drain(); }
+
+test('manager rejects a differing reply-target override while Claude keeps using it', async () => {
+  const other = '999@s.whatsapp.net';
+  const client = new FakeClient();
+  let lookups = 0;
+  client.ownerJid = async () => { lookups++; return OWNER; };
+  const { w, jobs } = await watcher({ accounts: [{ name: 'personal', instance: 'inst', ownerChat: other }] }, undefined, client);
+  assert.equal(lookups, 1);
+  assert.equal(w.managerOwnerChat, '');
+  await handle(w, record('OTHER', '@manager work', { chat: other }));
+  await handle(w, record('ACTUAL', '@manager work'));
+  assert.equal(jobs.length, 0);
+  assert.equal(client.sent.length, 0);
+  await assert.rejects(w.buildJob(record('DIRECT', '@manager work', { chat: other }), { name: 'manager', request: 'work' }), /self-chat/);
+  await handle(w, record('CLAUDEOVERRIDE', '@claude work', { chat: other }));
+  assert.equal(jobs[0].backend, 'claude');
+  assert.equal(jobs[0].ownerChat, other);
+  assert.equal(client.sent[0].number, other);
+});
+
+test('manager authenticates a matching override and learns LID only from the connected owner', async () => {
+  const dir = tmpDir();
+  new AccountStore(dir, 'personal').saveOwnerJids(['777@lid']);
+  const { w, jobs } = await watcher({ stateDir: dir, accounts: [{ name: 'personal', instance: 'inst', ownerChat: OWNER.split('@')[0] }] });
+  await handle(w, record('CACHE', '@manager work', { chat: '777@lid' }));
+  await handle(w, record('WRONGALT', '@manager work', { chat: OWNER_LID, alt: '999@s.whatsapp.net' }));
+  assert.equal(jobs.length, 0);
+  await handle(w, record('VERIFIED', '@manager work', { chat: OWNER_LID, alt: OWNER }));
+  assert.equal(jobs[0].authenticatedOwnerChat, OWNER);
+  assert.equal(jobs[0].ownerChat, OWNER);
+  assert.deepEqual(jobs[0].ownerJids, [OWNER, OWNER_LID]);
+  await handle(w, record('KNOWNLID', '@manager next', { chat: OWNER_LID }));
+  assert.equal(jobs.length, 2);
+});
+
+test('failed owner lookup disables manager without breaking the existing Claude override', async () => {
+  const client = new FakeClient();
+  client.ownerJid = async () => { throw new Error('offline'); };
+  const { w, jobs } = await watcher({ accounts: [{ name: 'personal', instance: 'inst', ownerChat: OWNER }] }, undefined, client);
+  await handle(w, record('OFFLINE', '@manager work'));
+  assert.equal(jobs.length, 0);
+  await handle(w, record('CLAUDEOFFLINE', '@claude work'));
+  assert.equal(jobs[0].backend, 'claude');
+});
 
 test('manager accepts fromMe owner self-chat only, including learned LID; Claude still handles groups', async () => {
   const { w, jobs, client } = await watcher();

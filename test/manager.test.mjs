@@ -13,6 +13,7 @@ function config(manager = {}) {
 const JOB = {
   id: 'J1', backend: 'manager', triggerName: 'manager',
   account: { name: 'personal', instance: 'inst' }, ownerChat: OWNER, ownerJids: [OWNER],
+  authenticatedOwnerChat: OWNER,
   chat: { isOwnerChat: true, isGroup: false },
   trigger: { key: { id: 'J1', fromMe: true, remoteJid: OWNER }, request: 'בדוק את המשימה', quoted: 'untrusted' },
 };
@@ -37,6 +38,16 @@ test('manager config is opt-in, validates command and never overlaps Claude trig
   assert.deepEqual(config({ triggers: ['@MANAGER'] }).manager.triggers, ['manager']);
 });
 
+test('manager and Claude trigger grammars cannot overlap in either direction', () => {
+  for (const [claude, manager] of [['claude', 'claude-manager'], ['manager-claude', 'manager'],
+    ['manager.more', 'manager'], ['manager:more', 'manager'], ['@MaNaGeR!', '@manager']]) {
+    assert.throws(() => normalizeConfig({ accounts: [{ name: 'personal', instance: 'inst' }], triggers: [claude],
+      manager: { enabled: true, command: process.execPath, triggers: [manager] } }, { EVOLUTION_API_KEY: 'k' }), /must not overlap/);
+  }
+  assert.equal(config({ triggers: ['claudemanager'] }).manager.triggers[0], 'claudemanager');
+  assert.equal(config({ enabled: false, triggers: ['claude-manager'] }).manager.enabled, false);
+});
+
 test('envelope contains only owner request and watcher identity; scope is stable and account-specific', () => {
   const cfg = config();
   const envelope = managerEnvelope(cfg, JOB);
@@ -53,6 +64,7 @@ test('direct manager invocation refuses non-owner jobs and disabled backend befo
   const cfg = config({ command: '/does-not-exist' });
   const jobs = [
     { ...JOB, backend: 'claude' }, { ...JOB, triggerName: 'claude' },
+    { ...JOB, authenticatedOwnerChat: undefined }, { ...JOB, authenticatedOwnerChat: '999@s.whatsapp.net' },
     { ...JOB, trigger: { ...JOB.trigger, key: { ...JOB.trigger.key, fromMe: false } } },
     { ...JOB, trigger: { ...JOB.trigger, key: { ...JOB.trigger.key, remoteJid: '999@s.whatsapp.net' } } },
     { ...JOB, trigger: { ...JOB.trigger, key: { ...JOB.trigger.key, remoteJid: '972500000001@g.us' } } },
@@ -66,6 +78,8 @@ test('direct manager invocation refuses non-owner jobs and disabled backend befo
     assert.match(result.error, /only from your own private chat/);
   }
   assert.equal((await runOperationsManager(config({ enabled: false }), JOB, cfg.stateDir)).ok, false);
+  const overridden = { ...cfg, accounts: [{ ...cfg.accounts[0], ownerChat: '999@s.whatsapp.net' }] };
+  assert.equal((await runOperationsManager(overridden, JOB, cfg.stateDir)).ok, false);
 });
 
 test('fixed argv stays literal and secrets or runtime hooks do not reach the child', async () => {

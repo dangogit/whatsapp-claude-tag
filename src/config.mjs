@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { LANGUAGES } from './strings.mjs';
+import { buildTriggerRegex } from './trigger.mjs';
 
 export function expandHome(p) {
   if (typeof p !== 'string') return p;
@@ -126,7 +127,9 @@ export function normalizeConfig(raw, env = process.env) {
     throw new Error('config.manager.triggers must be a nonempty list of names');
   }
   manager.triggers = manager.triggers.map(n => n.replace(/^@/, '').toLowerCase());
-  if (manager.enabled && cfg.triggers.some(n => manager.triggers.includes(n.trim().replace(/^@/, '').toLowerCase()))) {
+  // Delimiters such as '-' make a longer name match the shorter name's grammar.
+  if (manager.enabled && cfg.triggers.some(n => manager.triggers.some(m =>
+    buildTriggerRegex([n]).test(`@${m}`) || buildTriggerRegex([m]).test(`@${n.trim().replace(/^@/, '')}`)))) {
     throw new Error('config.manager.triggers must not overlap config.triggers');
   }
   if (typeof manager.command !== 'string' || manager.command.includes('\0') || (manager.command && !path.isAbsolute(manager.command)) || (manager.enabled && !manager.command)) {
