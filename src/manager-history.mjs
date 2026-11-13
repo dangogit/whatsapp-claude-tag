@@ -5,8 +5,14 @@ import { messageText, quotedId, timestampOf } from './text.mjs';
 import { mediaKind } from './media.mjs';
 
 const ENTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
+const DATABASE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const PAGE_SIZE = 100;
 const MAX_PAGES = 1000;
+const HISTORICAL_DUPLICATE_SKEW_MS = 2000;
+
+function sameContent(left, right) {
+  return left.id === right.id && left.role === right.role && left.body === right.body && left.quotedId === right.quotedId;
+}
 
 export function managerBody(rec) {
   const text = messageText(rec);
@@ -44,9 +50,12 @@ export async function readManagerHistory(client, instance, scope, aliases, curre
   if (typeof client.findMessagePage !== 'function') throw new Error('complete manager history unavailable');
   const streams = [];
   const seen = new Map();
+  const observations = new Map(), databaseRows = new Map();
+  const activation = Date.parse(scope.enabledSince);
   for (const jid of [...new Set([scope.actorId, ...aliases])]) {
     let expectedTotal, expectedPages;
     const rows = [];
+    const streamDatabaseIds = new Set(), streamMessageIds = new Set();
     for (let page = 1; page <= MAX_PAGES; page++) {
       const result = await client.findMessagePage(instance, { key: { remoteJid: jid, ...(jid === scope.actorId ? { remoteJidAlt: scope.actorId } : {}) } }, PAGE_SIZE, page);
       const { records, total, pages, currentPage } = result || {};
@@ -63,10 +72,32 @@ export async function readManagerHistory(client, instance, scope, aliases, curre
           throw new Error('manager history crossed chat scope');
         }
         const entry = managerEntry(rec);
-        if (rows.some(row => row.key.id === entry.id)) throw new Error('duplicate manager history page record');
+        const databaseId = typeof rec.id === 'string' && DATABASE_ID.test(rec.id) ? rec.id : null;
+        if (databaseId && streamDatabaseIds.has(databaseId)) throw new Error('duplicate manager history page record');
+        const databaseEntry = databaseId && databaseRows.get(databaseId);
+        if (databaseEntry && JSON.stringify(databaseEntry) !== JSON.stringify(entry)) throw new Error('conflicting manager history database row');
         const prior = seen.get(entry.id);
-        if (prior && JSON.stringify(prior) !== JSON.stringify(entry)) throw new Error('conflicting manager history id');
-        seen.set(entry.id, entry);
+        const observation = observations.get(entry.id);
+        if (streamMessageIds.has(entry.id) && (!databaseId || observation.missingDatabaseId)) throw new Error('duplicate manager history page record');
+        if (prior && JSON.stringify(prior) !== JSON.stringify(entry) && !databaseEntry) {
+          const at = Date.parse(entry.at), firstAt = Math.min(observation.firstAt, at), lastAt = Math.max(observation.lastAt, at);
+          // Evolution can store two historical copies with identical content but
+          // slightly different timestamps. Reconcile only separately identified
+          // database rows before activation, never a changed or current request.
+          if (!databaseId || observation.missingDatabaseId || observation.databaseIds.has(databaseId)
+            || !sameContent(prior, entry) || !Number.isFinite(activation) || lastAt >= activation
+            || lastAt - firstAt > HISTORICAL_DUPLICATE_SKEW_MS) throw new Error('conflicting manager history id');
+          seen.set(entry.id, { ...prior, at: new Date(firstAt).toISOString() });
+          observation.firstAt = firstAt; observation.lastAt = lastAt;
+        } else if (!prior) {
+          seen.set(entry.id, entry);
+          observations.set(entry.id, { firstAt: Date.parse(entry.at), lastAt: Date.parse(entry.at), databaseIds: new Set(), missingDatabaseId: false });
+        }
+        const provenance = observations.get(entry.id);
+        if (databaseId) {
+          streamDatabaseIds.add(databaseId); provenance.databaseIds.add(databaseId); databaseRows.set(databaseId, entry);
+        } else provenance.missingDatabaseId = true;
+        streamMessageIds.add(entry.id);
         if (rows.length && timestampOf(rows.at(-1)) < timestampOf(rec)) throw new Error('unordered manager history');
         rows.push(rec);
       }
@@ -80,10 +111,13 @@ export async function readManagerHistory(client, instance, scope, aliases, curre
   const cutoff = timestampOf(current);
   const before = new Map(), after = new Map();
   for (const id of seen.keys()) { before.set(id, new Set()); after.set(id, new Set()); }
-  for (const rows of streams) {
+  for (const stream of streams) {
+    // Keep only observations at the canonical timestamp. This preserves actual
+    // provider order around the earlier copy instead of moving a later copy.
+    const rows = stream.filter(row => seen.get(row.key.id).at === managerEntry(row).at);
     for (let i = 1; i < rows.length; i++) {
       const newer = rows[i - 1], older = rows[i];
-      if (timestampOf(newer) !== timestampOf(older)) continue;
+      if (newer.key.id === older.key.id || timestampOf(newer) !== timestampOf(older)) continue;
       before.get(newer.key.id).add(older.key.id);
       after.get(older.key.id).add(newer.key.id);
     }
