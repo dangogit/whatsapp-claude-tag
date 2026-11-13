@@ -25,6 +25,7 @@ const DEFAULTS = {
   timezone: '',
   language: 'en',
   replyPrefix: '',
+  manager: { enabled: false, triggers: ['manager'], command: '', args: [], timeoutMs: 30_000 },
   claude: {
     bin: 'claude',
     model: 'sonnet',
@@ -88,6 +89,7 @@ export function normalizeConfig(raw, env = process.env) {
     media: { ...DEFAULTS.media, ...(raw.media || {}) },
     baileys: { ...DEFAULTS.baileys, ...(raw.baileys || {}) },
     claude: { ...DEFAULTS.claude, ...(raw.claude || {}) },
+    manager: { ...DEFAULTS.manager, ...(raw.manager || {}) },
   };
 
   if (!TRANSPORTS.includes(cfg.transport)) throw new Error(`config.transport must be one of ${TRANSPORTS.join(', ')}`);
@@ -114,6 +116,27 @@ export function normalizeConfig(raw, env = process.env) {
 
   if (!Array.isArray(cfg.triggers) || !cfg.triggers.every(t => typeof t === 'string' && t.trim())) {
     throw new Error('config.triggers must be a list of names, for example ["claude"]');
+  }
+  if (raw.manager != null && (typeof raw.manager !== 'object' || Array.isArray(raw.manager))) {
+    throw new Error('config.manager must be an object');
+  }
+  const manager = cfg.manager;
+  if (typeof manager.enabled !== 'boolean') throw new Error('config.manager.enabled must be a boolean');
+  if (!Array.isArray(manager.triggers) || !manager.triggers.length || !manager.triggers.every(n => typeof n === 'string' && /^@?[\p{L}\p{N}_-]{1,32}$/u.test(n))) {
+    throw new Error('config.manager.triggers must be a nonempty list of names');
+  }
+  manager.triggers = manager.triggers.map(n => n.replace(/^@/, '').toLowerCase());
+  if (manager.enabled && cfg.triggers.some(n => manager.triggers.includes(n.trim().replace(/^@/, '').toLowerCase()))) {
+    throw new Error('config.manager.triggers must not overlap config.triggers');
+  }
+  if (typeof manager.command !== 'string' || manager.command.includes('\0') || (manager.command && !path.isAbsolute(manager.command)) || (manager.enabled && !manager.command)) {
+    throw new Error('config.manager.command must be an absolute path when enabled');
+  }
+  if (!Array.isArray(manager.args) || !manager.args.every(a => typeof a === 'string' && !a.includes('\0'))) {
+    throw new Error('config.manager.args must be a list of strings without NUL');
+  }
+  if (!Number.isInteger(manager.timeoutMs) || manager.timeoutMs < 1000 || manager.timeoutMs > 300_000) {
+    throw new Error('config.manager.timeoutMs must be an integer from 1000 to 300000');
   }
   if (!Number.isInteger(cfg.pollMs) || cfg.pollMs < 500) throw new Error('config.pollMs must be an integer >= 500');
   if (!Number.isInteger(cfg.claude.timeoutMs) || cfg.claude.timeoutMs < 10_000) {
