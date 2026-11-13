@@ -7,6 +7,14 @@ import xml.etree.ElementTree as ET
 
 LIMIT = 24576
 
+
+class DocumentTree(ET.TreeBuilder):
+    def doctype(self, name, pubid, system):
+        # The parser calls this after decoding XML, including UTF-16 documents.
+        # Reject before any internal entity declaration can be expanded.
+        raise ValueError('active_content')
+
+
 try:
     with zipfile.ZipFile(sys.argv[1]) as archive:
         members = archive.infolist()
@@ -31,7 +39,7 @@ try:
         xml = archive.read('word/document.xml')
         if b'<!DOCTYPE' in xml.upper() or b'<!ENTITY' in xml.upper():
             raise ValueError('active_content')
-        root = ET.fromstring(xml)
+        root = ET.fromstring(xml, parser=ET.XMLParser(target=DocumentTree()))
         ns = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
         # Only text nodes count; attributes, fields and external links never run.
         paragraphs = [''.join(t.text or '' for t in p.iter(ns + 't')) for p in root.iter(ns + 'p')]

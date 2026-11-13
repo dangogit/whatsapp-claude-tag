@@ -174,20 +174,22 @@ test('actual PDF text extraction, scanned-page rendering and page limit', { skip
 });
 
 test('actual DOCX local extraction rejects ZIP traversal, macros and expansion bombs', async () => {
-  for (const kind of ['normal', 'traversal', 'macro', 'bomb', 'doctype']) {
+  for (const kind of ['normal', 'normal-utf16', 'traversal', 'macro', 'bomb', 'doctype', 'doctype-utf16']) {
     const cfg = config(), file = path.join(cfg.stateDir, 'fixture.docx');
     execFileSync('python3', ['-I', '-c', `import sys,zipfile
 with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED) as z:
  z.writestr('[Content_Types].xml','<Types/>')
  xml='<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Example table and paragraph</w:t></w:r></w:p></w:body></w:document>'
- z.writestr('word/document.xml', ('<!DOCTYPE x>' if sys.argv[2]=='doctype' else '')+xml)
+ if sys.argv[2].startswith('doctype'): xml='<!DOCTYPE x [<!ENTITY injected "untrusted expanded text">]>'+xml.replace('Example table and paragraph','&injected;')
+ if sys.argv[2].endswith('utf16'): xml=xml.encode('utf-16')
+ z.writestr('word/document.xml', xml)
  if sys.argv[2]=='traversal': z.writestr('../escape','bad')
  if sys.argv[2]=='macro': z.writestr('word/vbaProject.bin','bad')
  if sys.argv[2]=='bomb': z.writestr('word/large.xml','a'*2000000)
 `, file, kind]);
     const mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     const item = await prepareManagerAttachment(cfg, provider(fs.readFileSync(file), mime), scope, record('documentMessage', mime));
-    if (kind === 'normal') { assert.equal(item.status, 'ready', item.reason); assert.equal(item.text, 'Example table and paragraph'); }
+    if (kind.startsWith('normal')) { assert.equal(item.status, 'ready', item.reason); assert.equal(item.text, 'Example table and paragraph'); }
     else { assert.equal(item.status, 'failed'); assert.ok(['active_content', 'archive_limit'].includes(item.reason), item.reason); }
     assert.equal(fs.existsSync(path.join(cfg.stateDir, 'escape')), false);
   }
