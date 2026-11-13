@@ -183,10 +183,10 @@ export class AccountWatcher {
       const scope = this.directScope();
       if (await this.managerIdentityMatches(scope)) {
         const activation = Math.floor(Date.parse(scope.enabledSince) / 1000);
-        const scopeHash = createHash('sha256').update(JSON.stringify(scope)).digest('hex');
-        const cursorFile = path.join(this.store.dir, `manager-cursor-${scopeHash}.json`);
-        const cursors = fs.existsSync(cursorFile) ? JSON.parse(fs.readFileSync(cursorFile, 'utf8')) : {};
-        const nextCursors = { ...cursors }, candidates = new Map();
+        // Evolution orders by timestamp only. Reconcile every post-activation
+        // row so same-second ties and late provider arrivals cannot hide behind
+        // a previous message-id cursor. Durable jobs deduplicate accepted work.
+        const candidates = new Map();
         for (const jid of [scope.actorId, ...this.managerPeerJids]) {
           const stream = [];
           let finished = false, expectedTotal;
@@ -199,10 +199,9 @@ export class AccountWatcher {
               || rows.length !== Math.min(BATCH, Math.max(0, result.total - (page - 1) * BATCH))
               || (expectedTotal !== undefined && expectedTotal !== result.total)) throw new Error('manager incoming pagination unavailable');
             expectedTotal = result.total;
-            if (page === 1 && rows.length) nextCursors[jid] = rows[0].key?.id;
             for (const rec of rows) {
               if (!peerKeyMatches(rec?.key, scope.actorId, this.managerPeerJids)) throw new Error('manager incoming crossed scope');
-              if (rec.key.id === cursors[jid] || timestampOf(rec) <= activation) { finished = true; break; }
+              if (timestampOf(rec) <= activation) { finished = true; break; }
               if (rec.key.fromMe === false) stream.push(rec);
             }
             if (finished || page >= result.pages) { finished = true; break; }
@@ -215,7 +214,6 @@ export class AccountWatcher {
           await this.handle(rec);
           this.store.markSeen([rec.key.id]);
         }
-        writeJsonAtomic(cursorFile, nextCursors, { durable: true });
       }
     }
     if (!fresh.length) return;

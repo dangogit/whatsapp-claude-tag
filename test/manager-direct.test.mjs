@@ -323,3 +323,26 @@ test('identical provider records from phone and LID queries deduplicate, conflic
   };
   await assert.rejects(readManagerHistory(f.client, 'biz', f.w.directScope(), [PEER_LID], rec), /conflicting/);
 });
+
+test('full direct reconciliation accepts same-second and delayed older arrivals behind previous rows across restart', async () => {
+  const f = await fixture();
+  // Evolution promises timestamp DESC only, so a newer arrival can be behind
+  // an already processed row with the same timestamp.
+  f.client.findMessages = async function (_instance, where = {}, limit = 50, page = 1) {
+    return this.rows(where).sort((a, b) => b.messageTimestamp - a.messageTimestamp)
+      .slice((page - 1) * limit, page * limit);
+  };
+  f.client.messages.push(incoming('FIRSTSEEN', 'first request'));
+  await f.w.poll(); await f.w.drain();
+  f.client.messages.push(incoming('SAMETIME', 'same-second delayed arrival'));
+  await f.w.poll(); await f.w.drain();
+  assert.deepEqual(f.jobs.map(j => j.id), ['FIRSTSEEN', 'SAMETIME']);
+  const restarted = await fixture({ stateDir: f.cfg.stateDir, client: f.client });
+  f.client.messages.push(incoming('DELAYEDOLDER', 'sent while offline', { ts: NOW / 1000 - 1800 }));
+  await restarted.w.poll(); await restarted.w.drain();
+  await restarted.w.poll(); await restarted.w.drain();
+  assert.deepEqual(restarted.jobs.map(j => j.id), ['DELAYEDOLDER']);
+  assert.equal(f.client.sent.length, 3);
+  assert.equal(restarted.store.hasSeen('SAMETIME'), true);
+  assert.equal(restarted.store.hasSeen('DELAYEDOLDER'), true);
+});
