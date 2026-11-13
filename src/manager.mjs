@@ -63,6 +63,7 @@ export async function runOperationsManager(cfg, job, jobDir) {
         resolve(value);
       };
       const stop = key => {
+        if (settled) return;
         failure ||= key;
         signalGroup('SIGTERM');
         cleanupTimer ||= setTimeout(() => finish(fail(failure)), 250);
@@ -96,6 +97,7 @@ export async function runOperationsManager(cfg, job, jobDir) {
         });
         child.on('error', () => finish(fail('managerFailed')));
         child.on('exit', code => {
+          if (settled) return;
           // A child can exit while descendants hold stdout open. Bound that wait too.
           signalGroup('SIGTERM');
           cleanupTimer ||= setTimeout(() => finish(result(code)), 250);

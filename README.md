@@ -201,6 +201,52 @@ The other machine has to be awake and reachable (Tailscale works well for this).
 
 ## Configuration
 
+### Optional operations manager
+
+You can route a separate tag to a trusted local CLI. This is off by default. `@claude` keeps using Claude Code; `@manager` uses the configured adapter only in your own self-chat. The adapter gets your new request, with no quoted text, media or chat history. A reply to its answer continues the manager conversation. Switching tags starts a request with the selected backend and does not carry the other backend's conversation or quote.
+
+```json
+"manager": {
+  "enabled": false,
+  "triggers": ["manager"],
+  "command": "/absolute/path/to/operations-manager",
+  "args": ["whatsapp"],
+  "timeoutMs": 30000
+}
+```
+
+Set `command` and `args` for an adapter you trust before enabling it. The command must be an absolute path. Arguments are passed literally with no shell, and requests travel through stdin. Manager trigger names cannot overlap the Claude names while enabled. This adapter runs as your OS user; it is not a sandbox.
+
+The adapter reads one JSON object from stdin:
+
+```json
+{
+  "schemaVersion": 1,
+  "source": "whatsapp",
+  "account": "personal",
+  "actorId": "15550000001@s.whatsapp.net",
+  "messageId": "MESSAGE_ID",
+  "conversationId": "whatsapp:<sha256 of account and owner>",
+  "body": "Check my tasks"
+}
+```
+
+The watcher derives the identity fields from its own owner-sent job. Text inside `body` cannot override them. A new request uses `whatsapp:` followed by the SHA-256 of `JSON.stringify([account, ownerChat])`; a swipe-reply uses the conversation ID saved with that manager answer. The adapter must enforce its own actor permissions and deduplicate requests by account, actor and message ID.
+
+On success, exit with code zero and write only this response shape to stdout:
+
+```json
+{"ok":true,"reply":"Task accepted","conversationId":"conversation-1","taskIds":["task-1"]}
+```
+
+The watcher sends `reply` to your own chat and saves the conversation and task IDs in `manager.json`. Conversation and task IDs must start with an ASCII letter or digit and contain only letters, digits, `:`, `.`, `_` or `-`, up to 256 characters. Use an empty task list for replies that start no work. Request bodies are limited to 32 KiB, stdout to 64 KiB, replies to 16,000 characters, and task lists to 100 IDs.
+
+The child receives only `HOME`, `TMPDIR`, `LANG` and a fixed system `PATH`; macOS may add its own locale setting. Watcher API keys, OAuth tokens, `NODE_OPTIONS` and `WCT_CONFIG` are not inherited. Use fixed arguments for an adapter config path and absolute paths for any executables it calls.
+
+The timeout defaults to 30 seconds and accepts 1 to 300 seconds. All processes in the adapter's process group are stopped on exit or timeout. Long-running work belongs in an existing service or durable queue. This bridge sends the immediate reply only; task progress delivery needs a separate integration. Failures produce a fixed message with no raw stdout or stderr, never fall back to Claude, and are not retried automatically.
+
+### Settings
+
 | Key | Default | Meaning |
 |---|---|---|
 | `transport` | `evolution` | `evolution` or `baileys`. |

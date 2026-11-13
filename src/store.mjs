@@ -4,7 +4,7 @@
 //   seen.json          ids of messages already handled (bounded)
 //   sent.log           ids of messages this tool sent, one per line (loop guard)
 //   pending/<id>.json  approval drafts waiting for a reply, keyed by draft message id
-//   threads.json       sent message id -> Claude session, so a reply continues the run
+//   threads.json       sent message id -> backend and conversation, for follow-ups
 //   jobs/<id>/         one directory per run: job.json, actions.jsonl
 
 import fs from 'node:fs';
@@ -72,7 +72,7 @@ export class AccountStore {
     fs.rmSync(path.join(this.dir, 'pending', `${safe(draftId)}.json`), { force: true });
   }
 
-  // Message id of something a run sent -> the Claude session that wrote it.
+  // Message id of something a run sent -> the backend conversation that wrote it.
   linkThread(messageId, info) {
     const file = path.join(this.dir, 'threads.json');
     const threads = readJson(file, {});

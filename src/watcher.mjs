@@ -10,7 +10,8 @@ import { buildDirectory } from './directory.mjs';
 import { confirmedTargets, sameUser } from './policy.mjs';
 import { appendAction, readActions, writeJsonAtomic } from './store.mjs';
 import { t } from './strings.mjs';
-import { approvalAnswer, defuseTrigger, parseTrigger, parseVoiceTrigger } from './trigger.mjs';
+import { approvalAnswer, buildTriggerRegex, defuseTrigger, parseTrigger, parseVoiceTrigger } from './trigger.mjs';
+import { managerTrigger } from './manager.mjs';
 import { mediaKind, ownVoiceNote, quotedMediaKind, saveMedia, transcribe } from './media.mjs';
 import { NOT_DONE } from './runner.mjs';
 import { isGroupJid, messageText, quotedId, quotedText, timestampOf, userPart } from './text.mjs';
@@ -30,6 +31,7 @@ export class AccountWatcher {
     this.queue = Promise.resolve();
     this.pendingJobs = 0;
     this.namesPromise = null;
+    this.managerRegex = this.cfg.manager?.enabled ? buildTriggerRegex(this.cfg.manager.triggers) : null;
   }
 
   async init() {
@@ -123,6 +125,7 @@ export class AccountWatcher {
   }
 
   async handle(rec) {
+    if (rec?.key?.fromMe !== true) return;
     this.learnOwnerLid(rec.key);
     const text = messageText(rec);
     const qid = quotedId(rec);
@@ -134,16 +137,25 @@ export class AccountWatcher {
         return;
       }
     }
-    const trig = parseTrigger(text, this.regex);
+    const trig = parseTrigger(text, this.regex) || (this.managerRegex && parseTrigger(text, this.managerRegex));
     // A swipe-reply to something a run sent continues that run's conversation. In the
     // owner's own chat no "@claude" is needed; anywhere else it still is, because there
     // the owner may simply be quoting the message while talking to people.
     const thread = qid ? this.store.getThread(qid) : null;
+    const backend = trig ? (managerTrigger(this.cfg, trig.name) ? 'manager' : 'claude') : thread?.backend || 'claude';
+    if (backend === 'manager' && (!this.cfg.manager?.enabled || isGroupJid(rec.key.remoteJid) || !this.isOwnerChat(rec.key))) return;
     if (thread && text.trim() && (trig || this.isOwnerChat(rec.key))) {
+      const compatible = backend === (thread.backend || 'claude') && (backend === 'manager'
+        ? thread.actorId === this.ownerChat && managerTrigger(this.cfg, thread.triggerName)
+        : !managerTrigger(this.cfg, thread.triggerName));
+      if (!compatible) {
+        if (trig) this.enqueue(rec, { ...trig, omitQuoted: true });
+        return;
+      }
       // "yes" to a message of the run that named a person or an address makes that message
       // part of what the owner authorised: the same check that lets "send it to Dana" through.
-      const approved = approvalAnswer(text) === 'yes' ? confirmedTargets(quotedText(rec)) : '';
-      this.enqueue(rec, { name: thread.triggerName || this.cfg.triggers[0], request: trig ? trig.request : text.trim() }, { ...thread, approved });
+      const approved = backend === 'claude' && approvalAnswer(text) === 'yes' ? confirmedTargets(quotedText(rec)) : '';
+      this.enqueue(rec, { name: trig?.name || thread.triggerName || this.cfg.triggers[0], request: trig ? trig.request : text.trim() }, { ...thread, approved });
       return;
     }
     if (!trig) {
@@ -212,7 +224,7 @@ export class AccountWatcher {
 
   // A thread linked mid-run has no session id yet; the run's result file has it.
   sessionFor(thread) {
-    if (!thread) return '';
+    if (!thread || (thread.backend && thread.backend !== 'claude')) return '';
     if (thread.sessionId) return thread.sessionId;
     try {
       const out = JSON.parse(fs.readFileSync(path.join(this.store.jobDir(thread.jobId), 'claude.json'), 'utf8'));
@@ -222,9 +234,13 @@ export class AccountWatcher {
 
   async buildJob(rec, trig, thread = null) {
     const key = rec.key;
+    if (key?.fromMe !== true) throw new Error('only owner-sent messages can become jobs');
+    const backend = managerTrigger(this.cfg, trig.name) ? 'manager' : 'claude';
+    if (thread && (thread.backend || 'claude') !== backend) thread = null;
     const alt = key.remoteJidAlt || '';
     const isGroup = isGroupJid(key.remoteJid);
     const isOwnerChat = !isGroup && this.isOwnerChat(key);
+    if (backend === 'manager' && !isOwnerChat) throw new Error('manager requests require the owner self-chat');
     let names = new Map();
     try { names = await this.getNames(); } catch { /* names are cosmetic here */ }
     const name = isOwnerChat ? 'owner'
@@ -235,6 +251,7 @@ export class AccountWatcher {
     const nowDate = new Date(this.now());
     return {
       id: key.id,
+      backend,
       triggerName: trig.name,
       account: { name: this.account.name, instance: this.account.instance },
       chat: { jid: key.remoteJid, alt, name, isGroup, isOwnerChat, sendTo },
@@ -243,18 +260,19 @@ export class AccountWatcher {
       trigger: {
         key: { id: key.id, remoteJid: key.remoteJid, fromMe: true, ...(key.participant ? { participant: key.participant } : {}) },
         request: trig.request,
-        quoted: thread ? '' : quotedText(rec),
+        quoted: backend === 'manager' || thread || trig.omitQuoted ? '' : quotedText(rec),
         // Earlier requests in this conversation still name the chats it may use.
-        earlier: thread?.requests || '',
-        approved: thread?.approved || '',
+        earlier: backend === 'manager' ? '' : thread?.requests || '',
+        approved: backend === 'manager' ? '' : thread?.approved || '',
         // media on the owner's message itself, and on the message it replies to
-        mediaId: mediaKind(rec) ? key.id : '',
-        mediaKind: mediaKind(rec),
-        quotedMediaId: quotedMediaKind(rec) ? quotedId(rec) : '',
-        quotedMediaKind: quotedMediaKind(rec),
+        mediaId: backend === 'claude' && mediaKind(rec) ? key.id : '',
+        mediaKind: backend === 'claude' ? mediaKind(rec) : '',
+        quotedMediaId: backend === 'claude' && !trig.omitQuoted && quotedMediaKind(rec) ? quotedId(rec) : '',
+        quotedMediaKind: backend === 'claude' && !trig.omitQuoted ? quotedMediaKind(rec) : '',
         voice: Boolean(trig.voice),
       },
-      resumeSessionId: this.sessionFor(thread),
+      resumeSessionId: backend === 'claude' ? this.sessionFor(thread) : '',
+      ...(backend === 'manager' ? { resumeConversationId: thread?.actorId === this.ownerChat ? thread.conversationId || '' : '' } : {}),
       replyPrefix: this.cfg.replyPrefix,
       language: this.cfg.language,
       timezone: this.cfg.timezone,
@@ -299,9 +317,13 @@ export class AccountWatcher {
       replyIds.push(await this.notifyOwner(finalLine));
       appendAction(jobDir, { type: notDone ? 'not-done-to-owner' : 'fallback-to-owner' });
     }
-    if (res.ok && res.sessionId) {
+    if (res.ok && (job.backend === 'manager' ? res.conversationId : res.sessionId)) {
       for (const id of replyIds.filter(Boolean)) {
-        this.store.linkThread(id, {
+        this.store.linkThread(id, job.backend === 'manager' ? {
+          backend: 'manager', jobId: job.id, triggerName: job.triggerName,
+          actorId: job.ownerChat, conversationId: res.conversationId, taskIds: res.taskIds,
+        } : {
+          backend: 'claude',
           jobId: job.id, sessionId: res.sessionId, triggerName: job.triggerName,
           // what the owner wrote, not what a "yes" confirmed: a confirmation covers one run
           requests: [job.trigger.earlier, job.trigger.request].filter(Boolean).join('\n').slice(-4000),

@@ -1,6 +1,6 @@
 // The long-running watcher: one AccountWatcher per account, polled until stopped.
 
-import { runClaude } from './runner.mjs';
+import { runJob as defaultRunJob } from './runner.mjs';
 import { AccountStore, acquireLock } from './store.mjs';
 import { openTransport } from './transport.mjs';
 import { buildTriggerRegex } from './trigger.mjs';
@@ -9,7 +9,7 @@ import { AccountWatcher } from './watcher.mjs';
 // deps: { log, runJob, makeSocket, signal }. Without a signal, SIGTERM and SIGINT stop it.
 export async function runService(cfg, deps = {}) {
   const log = deps.log || (() => {});
-  const runJob = deps.runJob || runClaude;
+  const runJob = deps.runJob || defaultRunJob;
   const releaseLock = acquireLock(cfg.stateDir);
   let transport;
   try {
