@@ -18,6 +18,14 @@
   "replyPrefix": "",
   "pollMs": 2000,
   "stateDir": "~/.local/state/whatsapp-claude-tag",
+  "manager": {
+    "enabled": false,
+    "deliveries": false,
+    "triggers": ["manager"],
+    "command": "",
+    "args": [],
+    "timeoutMs": 30000
+  },
   "claude": {
     "bin": "claude",
     "model": "sonnet",

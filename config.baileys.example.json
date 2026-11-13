@@ -1,5 +1,13 @@
 {
   "transport": "baileys",
+  "manager": {
+    "enabled": false,
+    "deliveries": false,
+    "triggers": ["manager"],
+    "command": "",
+    "args": [],
+    "timeoutMs": 30000
+  },
   "baileys": {
     "authDir": "~/.local/state/whatsapp-claude-tag/baileys",
     "keepDays": 30

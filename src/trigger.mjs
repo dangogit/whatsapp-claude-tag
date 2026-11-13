@@ -20,6 +20,25 @@ export function parseTrigger(text, regex) {
   return { name: m[1], request: m[2].trim() };
 }
 
+export function canonicalTriggerName(name, names) {
+  if (typeof name !== 'string') return '';
+  return (names || []).map(n => String(n).trim().replace(/^@/, ''))
+    .find(n => new RegExp(`^${escapeRegex(n)}$`, 'iu').test(name)) || '';
+}
+
+// Preserve the matching namespace and configured spelling. Unicode regex case
+// folding is not equivalent to lowercasing the spelling captured from a message.
+export function buildTriggerMatcher(names, backend) {
+  const matchers = names.map(n => ({ name: String(n).trim().replace(/^@/, ''), regex: buildTriggerRegex([n]) }));
+  return text => {
+    for (const { name, regex } of matchers) {
+      const match = parseTrigger(text, regex);
+      if (match) return { name, request: match.request, backend };
+    }
+    return null;
+  };
+}
+
 // Text this tool sends lands in the owner's chats as a fromMe message, exactly like
 // something the owner typed. A word joiner after a leading "@" keeps it from ever
 // matching a trigger, whatever the configured names are, and looks the same.

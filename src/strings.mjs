@@ -2,6 +2,10 @@
 
 const STRINGS = {
   en: {
+    managerRefused: 'The manager accepts requests only from your own private chat.',
+    managerFailed: 'The manager could not complete this request. Check its local status before retrying.',
+    managerTimedOut: 'The manager did not answer in time. Check its local status before retrying.',
+    managerOutputInvalid: 'The manager returned an invalid response. Check its local status before retrying.',
     failed: '⚠️ @{name} could not finish: {error}',
     approvedSent: '✅ Sent to {target}.',
     approvalDropped: '🗑️ Dropped, nothing was sent to {target}.',
@@ -13,6 +17,10 @@ const STRINGS = {
     you: 'you',
   },
   he: {
+    managerRefused: 'המנהל מקבל בקשות רק מהצ׳אט הפרטי שלך עם עצמך.',
+    managerFailed: 'המנהל לא הצליח להשלים את הבקשה. צריך לבדוק את המצב המקומי לפני ניסיון נוסף.',
+    managerTimedOut: 'המנהל לא ענה בזמן. צריך לבדוק את המצב המקומי לפני ניסיון נוסף.',
+    managerOutputInvalid: 'המנהל החזיר תשובה לא תקינה. צריך לבדוק את המצב המקומי לפני ניסיון נוסף.',
     failed: '⚠️ @{name} לא הצליח לסיים: {error}',
     approvedSent: '✅ נשלח ל{target}.',
     approvalDropped: '🗑️ בוטל, לא נשלח כלום ל{target}.',

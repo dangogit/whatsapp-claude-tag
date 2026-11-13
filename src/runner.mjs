@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runOperationsManager } from './manager.mjs';
 
 const MCP_SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mcp-server.mjs');
 // WebFetch is opt-in: a run that has read chat history could be steered into
@@ -15,6 +16,11 @@ function webTools(cfg) {
 // Marks a final line that says part of the request could not be done; the watcher
 // forwards it to the owner even when the run already sent something elsewhere.
 export const NOT_DONE = 'NOT DONE:';
+
+// A manager failure is final for this request. It never falls back to Claude.
+export function runJob(cfg, job, jobDir) {
+  return job.backend === 'manager' ? runOperationsManager(cfg, job, jobDir) : runClaude(cfg, job, jobDir);
+}
 
 export function systemPrompt(job, extensions = [], { note = '', fullAccess = false } = {}) {
   const n = job.triggerName;

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { chatAllowed, nameTokens, phoneNumbersIn } from '../src/policy.mjs';
 import { messageText, quotedId, quotedText, userPart } from '../src/text.mjs';
-import { approvalAnswer, buildTriggerRegex, defuseTrigger, parseTrigger } from '../src/trigger.mjs';
+import { approvalAnswer, buildTriggerMatcher, buildTriggerRegex, defuseTrigger, parseTrigger } from '../src/trigger.mjs';
 
 const re = buildTriggerRegex(['claude']);
 
@@ -28,6 +28,15 @@ test('custom trigger names, with or without @, and escaped', () => {
   assert.equal(parseTrigger('@קלוד תעשה', r).request, 'תעשה');
   assert.equal(parseTrigger('@cx3 go', r), null);
   assert.throws(() => buildTriggerRegex([]));
+});
+
+test('backend matcher keeps the namespace and canonical name across Unicode case folds', () => {
+  for (const [name, input] of [['ops', 'opſ'], ['ſcope', 'scope'], ['σ', 'ς'], ['k', 'K']]) {
+    const match = buildTriggerMatcher([name], 'manager')(`@${input} work`);
+    assert.deepEqual(match, { name, backend: 'manager', request: 'work' });
+  }
+  assert.deepEqual(buildTriggerMatcher(['@Claude'], 'claude')('@CLAUDE work'),
+    { name: 'Claude', backend: 'claude', request: 'work' });
 });
 
 test('approval answers', () => {
